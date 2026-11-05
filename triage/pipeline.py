@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -42,11 +44,22 @@ def _open_storage(storage):
         return None, True
 
 
+def _heat_cap() -> int:
+    try:
+        return max(0, int(os.environ.get("HEAT_MAX_POSTS", "300")))
+    except ValueError:
+        return 300
+
+
 def _drop_row_id(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=_ROW_ID) if _ROW_ID in df.columns else df
 
 
-def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storage=None) -> Result:
+def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storage=None,
+            progress=None) -> Result:
+    """progress(stage, done, total) is called as posts move through the pipeline."""
+    report = progress or (lambda *a: None)
+    report("Reading files", 0, 0)
     df = combine_uploads(files)
     text_cols = _find_columns(df, kw.TEXT_COLUMN_OPTIONS)
     screened = screen_dataframe(df)
@@ -55,8 +68,27 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
     # Review spends the monthly allowance first; heat uses whatever remains.
     budget = resolve_budget(storage, open_storage=False)
     flagged = screened.loc[screened["category"] != ""].copy()
-    flagged = refine(flagged, text_cols, complete=refine_fn, budget=budget)
-    screened = analyze_heat(screened, text_cols, complete=heat_fn, budget=budget)
+    total = len(screened)
+    report("Screening posts", total, total)
+    counter = {"done": 0}
+    lock = threading.Lock()
+
+    def tick(stage, n_total):
+        def _add(n):
+            with lock:
+                counter["done"] += n
+                report(stage, min(counter["done"], n_total), n_total)
+        return _add
+    counter["done"] = 0
+    report("Reviewing flagged posts", 0, len(flagged))
+    flagged = refine(flagged, text_cols, complete=refine_fn, budget=budget,
+                     progress=tick("Reviewing flagged posts", len(flagged)))
+    heat_total = min(total, _heat_cap())
+    counter["done"] = 0
+    report("Rating heated language", 0, heat_total)
+    screened = analyze_heat(screened, text_cols, complete=heat_fn, budget=budget,
+                            progress=tick("Rating heated language", heat_total))
+    report("Saving results", total, total)
     heat_cols = [c for c in ("heat_score", "heat_topic", "heat_subtopic", "heated_phrases", "heat_sampled")
                  if c in screened.columns]
     if heat_cols and "heat_sampled" in screened.columns and screened["heat_sampled"].fillna(False).astype(bool).any():

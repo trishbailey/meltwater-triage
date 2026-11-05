@@ -1,0 +1,39 @@
+<div class="progress" id="progress" hidden aria-live="polite">
+<p class="pstage" id="pstage">Uploading…</p>
+<div class="ptrack" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="pstage" id="pbar"><div class="pfill" id="pfill"></div></div>
+<p class="note" id="pcount"></p></div>
+<p class="okmsg" id="presult" role="status" hidden></p>
+<p class="err" id="perror" role="alert" hidden></p>
+<script>
+(function(){
+var form=document.getElementById("upform");if(!form||!window.XMLHttpRequest||!window.FormData)return;
+var box=document.getElementById("progress"),stage=document.getElementById("pstage"),bar=document.getElementById("pbar"),
+fill=document.getElementById("pfill"),count=document.getElementById("pcount"),okEl=document.getElementById("presult"),
+errEl=document.getElementById("perror"),btn=form.querySelector("button[type=submit]");
+function set(pct,label,detail,busy){pct=Math.max(0,Math.min(100,pct));fill.style.width=pct+"%";bar.setAttribute("aria-valuenow",Math.round(pct));
+fill.classList.toggle("busy",!!busy);stage.textContent=label;count.textContent=detail||"";}
+function finish(){btn.disabled=false;btn.textContent=btn.dataset.label;}
+function fail(msg){box.hidden=true;errEl.textContent=msg;errEl.hidden=false;finish();}
+function poll(id){fetch("/jobs/"+id,{credentials:"same-origin"}).then(function(r){return r.json().then(function(j){return [r.ok,j];});}).then(function(x){
+var ok=x[0],j=x[1];if(!ok){fail(j.error||"Lost track of the upload.");return;}
+if(j.state==="running"){var pct=j.total?100*j.done/j.total:0;
+set(j.total?pct:100,j.stage+"…",j.total?(j.done+" of "+j.total+" "+(form.dataset.unit||"posts")+" processed"):"Working…",!j.total);
+setTimeout(function(){poll(id);},1000);return;}
+if(j.state==="error"){fail(j.error);return;}
+set(100,"Done","",false);box.hidden=true;okEl.textContent=j.message+" ("+j.elapsed+" s)";okEl.hidden=false;finish();
+if(j.has_download){window.location="/jobs/"+id+"/download";}
+}).catch(function(){setTimeout(function(){poll(id);},3000);});}
+form.addEventListener("submit",function(e){e.preventDefault();okEl.hidden=true;errEl.hidden=true;
+btn.dataset.label=btn.dataset.label||btn.textContent;btn.disabled=true;btn.textContent="Processing…";
+box.hidden=false;set(0,"Uploading…","0%",false);
+var xhr=new XMLHttpRequest();xhr.open("POST",form.action);xhr.setRequestHeader("X-Upload-Mode","job");
+xhr.upload.onprogress=function(ev){if(ev.lengthComputable){var p=100*ev.loaded/ev.total;set(p,"Uploading…",Math.round(p)+"% uploaded",false);}};
+xhr.upload.onload=function(){set(100,"Processing…","Waiting for the server",true);};
+xhr.onload=function(){var j={};try{j=JSON.parse(xhr.responseText);}catch(_){}
+if(xhr.status===202&&j.job){set(0,"Processing…","",true);poll(j.job);}
+else if(xhr.status===401||xhr.responseURL.indexOf("/login")>-1){fail("Your session ended. Sign in again.");}
+else{fail(j.error||"Upload failed. Please try again.");}};
+xhr.onerror=function(){fail("Upload failed. Check your connection and try again.");};
+xhr.send(new FormData(form));});
+})();
+</script>

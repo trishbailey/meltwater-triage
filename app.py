@@ -26,6 +26,8 @@ from triage.pipeline import process, to_workbook
 from triage import dashboard as dash
 from triage.alerts import AlertError, parse_alert
 from triage.storage import Storage, persistence_enabled
+from triage import jobs
+from triage.seerist import SeeristError, item_key, parse_pdf, to_alert
 
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "50"))
 
@@ -166,8 +168,27 @@ def create_app() -> Flask:
             app.logger.warning("Rejected cross-site upload from origin %s", origin)
             return render_template("index.html", error="Upload blocked: submit the form from this site."), 403
         files = [(f.filename, f.read()) for f in request.files.getlist("files") if f and f.filename]
+        wants_job = request.headers.get("X-Upload-Mode") == "job"
         if not files:
+            if wants_job:
+                return {"error": "Please choose at least one file."}, 400
             return render_template("index.html", error="Please choose at least one file."), 400
+        if wants_job:
+            def work(progress):
+                t0 = time.monotonic()
+                try:
+                    result = process(files, progress=progress)
+                except ValueError as exc:
+                    raise ValueError(_public_error(exc)) from exc
+                except Exception as exc:
+                    app.logger.warning("Upload failed: %s", type(exc).__name__)
+                    raise ValueError("Could not read the uploaded file(s).") from exc
+                progress("Building the Excel file", 0, 0)
+                payload = to_workbook(result)
+                app.logger.info("Screened %d posts in %.1fs", len(result.all_posts), time.monotonic() - t0)
+                return {"payload": payload,
+                        "message": f"Screened {len(result.all_posts)} posts; {len(result.flagged)} flagged."}
+            return {"job": jobs.start("screen", work)}, 202
         try:
             result = process(files)
         except ValueError as exc:
@@ -180,9 +201,78 @@ def create_app() -> Flask:
         except Exception as exc:
             app.logger.warning("Workbook failed: %s", type(exc).__name__)
             return render_template("index.html", error="Could not build the download."), 500
+        return _xlsx(payload)
+
+    def _xlsx(payload: bytes):
         name = f"flagged_posts_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.xlsx"
         return send_file(io.BytesIO(payload), as_attachment=True, download_name=name,
                          mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    @app.get("/jobs/<jid>")
+    @require_password
+    def job_status(jid: str):
+        j = jobs.get(jid)
+        if j is None:
+            return {"error": "Job not found. It may have expired."}, 404
+        return jobs.public(j)
+
+    @app.get("/jobs/<jid>/download")
+    @require_password
+    def job_download(jid: str):
+        j = jobs.get(jid)
+        if j is None or "payload" not in j:
+            return Response("Download not available. It may have expired.", 404)
+        return _xlsx(j["payload"])
+
+    @app.get("/seerist")
+    @require_password
+    def seerist_page():
+        return render_template("seerist.html", error=None, message=None)
+
+    def _import_seerist(data: bytes, progress) -> dict:
+        st = _storage()
+        if st is None:
+            raise ValueError("Storage is not configured, so Seerist items cannot be saved.")
+        progress("Reading the PDF", 0, 0)
+        try:
+            items = parse_pdf(data)
+        except SeeristError as exc:
+            raise ValueError(str(exc)) from exc
+        if not items:
+            raise ValueError("No Seerist items were found in that PDF.")
+        added = skipped = 0
+        for n, item in enumerate(items, 1):
+            _, created = st.add_alert(to_alert(item), url_key=item_key(item))
+            added, skipped = added + created, skipped + (not created)
+            progress("Saving items", n, len(items))
+        msg = (f"Added {added} item{'s' if added != 1 else ''}, skipped {skipped} "
+               f"duplicate{'s' if skipped != 1 else ''}.")
+        return {"message": msg, "added": added, "skipped": skipped, "items": len(items)}
+
+    @app.post("/seerist/upload")
+    @require_password
+    def seerist_upload():
+        wants_job = request.headers.get("X-Upload-Mode") == "job"
+
+        def fail(msg, code):
+            if wants_job:
+                return {"error": msg}, code
+            return render_template("seerist.html", error=msg, message=None), code
+        if not _same_origin_upload():
+            return fail("Upload blocked: submit the form from this site.", 403)
+        f = request.files.get("file")
+        if not f or not f.filename:
+            return fail("Please choose a Seerist PDF export.", 400)
+        data = f.read()
+        if not data.startswith(b"%PDF"):
+            return fail("That file is not a PDF. Upload a Seerist PDF export.", 400)
+        if wants_job:
+            return {"job": jobs.start("seerist", lambda progress: _import_seerist(data, progress))}, 202
+        try:
+            res = _import_seerist(data, lambda *a: None)
+        except ValueError as exc:
+            return fail(str(exc), 400)
+        return render_template("seerist.html", error=None, message=res["message"])
 
     def _storage():
         if not persistence_enabled():
