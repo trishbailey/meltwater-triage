@@ -53,5 +53,5 @@ input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
 .okmsg{color:#2fd6b5;font-size:15px}
 .chip{max-width:100%;overflow-wrap:anywhere}
 .narrow{max-width:420px;margin:8vh auto 0}
-</style></head><body><main>{% if session.get("auth") %}<nav class="topnav" aria-label="Site"><a href="/dashboard">Dashboard</a><a href="/">Upload</a><a href="/seerist">Seerist</a><a href="/status">Status</a>
-<form method="post" action="/logout" style="margin:0"><button class="btn" type="submit">Sign out</button></form></nav>{% endif %}{% block body %}{% endblock %}</main></body></html>
+</style></head><body><main><nav class="topnav" aria-label="Site"><a href="/dashboard">Dashboard</a><a href="/">Upload</a><a href="/seerist">Seerist</a><a href="/status">Status</a>
+</nav>{% block body %}{% endblock %}</main></body></html>

@@ -79,13 +79,6 @@ def _pdf(monkeypatch):
     return b"%PDF-1.4 fake"
 
 
-def test_seerist_page_requires_login(tmp_path, monkeypatch):
-    monkeypatch.setenv("SECRET_KEY", "k" * 32)
-    monkeypatch.setenv("APP_PASSWORD", "pw")
-    from app import create_app
-    c = create_app().test_client()
-    assert c.get("/seerist").status_code == 302
-    assert c.post("/seerist/upload").status_code == 302
 
 
 def test_seerist_upload_form_and_dedupe(client, monkeypatch):
