@@ -16,14 +16,21 @@ TOKEN = "tok-test"
 def client(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/t.db")
+    monkeypatch.setenv("SECRET_KEY", "k" * 32)
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "0")
     monkeypatch.setenv("APP_PASSWORD", PW)
     monkeypatch.setenv("ALERT_INGEST_TOKEN", TOKEN)
-    from app import create_app
+    from app import create_app, _failures
+    _failures.clear()
     return create_app().test_client()
 
 
+def login(c, pw=PW):
+    return c.post("/login", data={"password": pw})
+
+
 def auth(pw=PW):
-    return {"Authorization": "Basic " + base64.b64encode(f"u:{pw}".encode()).decode()}
+    return {}
 
 
 def bearer(t=TOKEN):
@@ -66,11 +73,64 @@ def test_alert_ingest_unconfigured(client, monkeypatch):
     assert client.post("/api/alerts", json=ALERT, headers=bearer()).status_code == 503
 
 
-def test_pages_need_password(client):
-    for path in ("/status", "/dashboard"):
-        assert client.get(path).status_code == 401
-        assert client.get(path, headers=auth("bad")).status_code == 401
-        assert client.get(path, headers=auth()).status_code == 200
+def test_pages_need_login(client):
+    for path in ("/status", "/dashboard", "/"):
+        r = client.get(path)
+        assert r.status_code == 302 and r.headers["Location"].startswith("/login")
+    assert login(client, "bad").status_code == 401
+    r = login(client)
+    assert r.status_code == 302 and r.headers["Location"] == "/dashboard"
+    for path in ("/status", "/dashboard", "/"):
+        assert client.get(path).status_code == 200
+    assert client.post("/logout").status_code == 302
+    assert client.get("/dashboard").status_code == 302
+
+
+def test_login_page_single_field_and_dark(client):
+    html = client.get("/login").get_data(as_text=True)
+    assert html.count("<input") == 2 and 'type="password"' in html and "username" not in html.lower()
+    assert "#fff" not in html.lower() and "color:white" not in html.lower() and "#ffffff" not in html.lower()
+
+
+def test_session_cookie_flags(monkeypatch, tmp_path):
+    monkeypatch.setenv("SECRET_KEY", "k" * 32)
+    monkeypatch.setenv("APP_PASSWORD", PW)
+    monkeypatch.delenv("SESSION_COOKIE_SECURE", raising=False)
+    from app import create_app, _failures
+    _failures.clear()
+    r = create_app().test_client().post("/login", data={"password": PW}, base_url="https://localhost")
+    c = r.headers["Set-Cookie"]
+    for flag in ("HttpOnly", "Secure", "SameSite=Lax", "Expires="):
+        assert flag in c
+    from datetime import datetime, timezone
+    from email.utils import parsedate_to_datetime
+    exp = parsedate_to_datetime(c.split("Expires=")[1].split(";")[0])
+    assert 29 <= (exp - datetime.now(timezone.utc)).days <= 30
+
+
+def test_login_rate_limit_and_open_redirect(client):
+    for _ in range(5):
+        assert login(client, "bad").status_code == 401
+    assert login(client).status_code == 429
+    from app import _failures
+    _failures.clear()
+    r = client.post("/login", data={"password": PW, "next": "//evil.example"})
+    assert r.headers["Location"] == "/dashboard"
+
+
+def test_login_blocks_cross_site(client):
+    r = client.post("/login", data={"password": PW}, headers={"Origin": "https://evil.example"})
+    assert r.status_code == 403
+
+
+def test_delete_alert(client):
+    rid = client.post("/api/alerts", json=ALERT, headers=bearer()).get_json()["id"]
+    assert client.post(f"/alerts/{rid}/delete").status_code == 302  # signed out -> login
+    login(client)
+    assert client.post(f"/alerts/{rid}/delete", headers={"Origin": "https://evil.example"}).status_code == 403
+    assert client.post(f"/alerts/{rid}/delete").status_code == 302
+    assert client.post(f"/alerts/{rid}/delete").status_code == 404
+    assert Storage().load_alerts().empty
 
 
 def _posts():
@@ -117,6 +177,7 @@ def test_dashboard_renders_with_data(client):
     df = _posts()
     st.save_run(rows_to_store(df, df), ["s.xlsx"], 4)
     client.post("/api/alerts", json=ALERT, headers=bearer())
+    login(client)
     html = client.get("/dashboard?month=2026-10", headers=auth()).get_data(as_text=True)
     for s in ("Recurring threat posters", "Early warning", "Monthly report summary", "Perth", "AUKUS",
               "not counted in any Meltwater total"):

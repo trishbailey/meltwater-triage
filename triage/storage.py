@@ -372,3 +372,7 @@ class Storage:
                     if k and (k not in out or created < out[k]):
                         out[k] = created
         return out
+
+    def delete_alert(self, alert_id: int) -> bool:
+        with self.engine.begin() as conn:
+            return conn.execute(alerts.delete().where(alerts.c.id == alert_id)).rowcount > 0

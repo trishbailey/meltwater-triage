@@ -76,8 +76,17 @@ Uploads are limited by `MAX_UPLOAD_MB` (default 50), `MAX_UNCOMPRESSED_MB` (defa
 xlsx zip expansion), and `MAX_SCREEN_ROWS` (default 100000). Document IDs are read as
 text so a blank cell does not turn `12345` into `12345.0`.
 
+## Sign-in
+
+Pages use a `/login` form with a single password field (checked against `APP_PASSWORD`). Success sets a signed,
+HttpOnly, Secure, SameSite=Lax session cookie for 30 days, signed with `SECRET_KEY` (required; pages return 503
+without it). Five failed attempts from one address within 15 minutes are blocked (per worker process). Signed-out
+page requests redirect to `/login`; `/healthz` is open and `/api/alerts` uses its bearer token. Sign-in, sign-out,
+uploads and alert deletion reject cross-site Origin headers. For local http testing set `SESSION_COOKIE_SECURE=0`.
+
 ## Status, dashboard and alerts
 
+- `POST /alerts/<id>/delete` (signed in): deletes one alert; the dashboard has a Delete button on each alert.
 - `/status` (password): stored rows by post month and flag type, upload runs, alert count, and posts sent for review this month against the monthly cap.
 - `/dashboard` (password): month selector; threat vs protest volume; month-over-month strip; written monthly summary; threat types by engagement; top targets and named people; recurring threat posters with drill-down; protest locations, topics and organizers; heated-topic ranking; early-warning layer.
 - `POST /api/alerts` with `Authorization: Bearer $ALERT_INGEST_TOKEN` and a JSON body:

@@ -59,24 +59,38 @@ def test_upload_roundtrip_xlsx_and_csv():
 
 @pytest.fixture
 def client(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "k" * 32)
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "0")
     monkeypatch.setenv("APP_PASSWORD", "test-pw")
-    from app import create_app
-    return create_app().test_client()
+    from app import create_app, _failures
+    _failures.clear()
+    c = create_app().test_client()
+    assert c.post("/login", data={"password": "test-pw"}).status_code == 302
+    return c
 
 
 def _auth(pw):
-    return {"Authorization": "Basic " + base64.b64encode(f"u:{pw}".encode()).decode()}
+    return {}
 
 
-def test_auth_required(client):
-    assert client.get("/").status_code == 401
-    assert client.get("/", headers=_auth("wrong")).status_code == 401
-    assert client.get("/", headers=_auth("test-pw")).status_code == 200
-    assert client.get("/healthz").status_code == 200
+def test_auth_required(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "k" * 32)
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "0")
+    monkeypatch.setenv("APP_PASSWORD", "test-pw")
+    from app import create_app, _failures
+    _failures.clear()
+    c = create_app().test_client()
+    r = c.get("/")
+    assert r.status_code == 302 and "/login" in r.headers["Location"]
+    assert c.get("/healthz").status_code == 200
+    assert c.post("/login", data={"password": "wrong"}).status_code == 401
+    assert c.post("/login", data={"password": "test-pw"}).status_code == 302
+    assert c.get("/").status_code == 200
 
 
 def test_no_password_configured(monkeypatch):
     monkeypatch.delenv("APP_PASSWORD", raising=False)
+    monkeypatch.setenv("SECRET_KEY", "k" * 32)
     from app import create_app
     assert create_app().test_client().get("/").status_code == 503
 

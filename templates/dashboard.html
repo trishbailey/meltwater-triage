@@ -64,6 +64,7 @@
 {{ a.author or "Unknown author" }}{% if a.confirmed %} <span class="ok">Confirmed in Meltwater{% if a.lead %}, {{ a.lead }} earlier{% endif %}</span>{% endif %}</summary>
 <div class="body"><p class="note">First seen {{ a.first_seen }}</p>{% if a.text %}<p>{{ a.text }}</p>{% endif %}
 {% for t in a.terms %}<span class="tag">{{ t }}</span>{% endfor %}
-<p><a href="{{ a.url }}" rel="noopener noreferrer" target="_blank">Open source post</a></p></div></details>{% endfor %}
+<p><a href="{{ a.url }}" rel="noopener noreferrer" target="_blank">Open source post</a></p>
+<form method="post" action="/alerts/{{ a.id }}/delete" onsubmit="return confirm('Delete this alert?')"><button class="btn danger" type="submit">Delete alert</button></form></div></details>{% endfor %}
 {% else %}<p>No early-warning alerts received yet.</p>{% endif %}</section>
 {% endblock %}

@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex, nofollow"><title>{% block title %}Threat and Protest Monitor{% endblock %}</title>
+<meta name="theme-color" content="#0b1526"><meta name="robots" content="noindex, nofollow"><title>{% block title %}Threat and Protest Monitor{% endblock %}</title>
 <style>
 :root{--bg:#0b1526;--panel:#12203a;--panel2:#0f1b31;--line:#24365a;--text:#e6e9ef;--muted:#9aa6b8;--gold:#c8a24a;--red:#c0504d}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
@@ -35,4 +35,16 @@ details .body{padding:0 12px 12px}
 .months a[aria-current]{border-color:var(--gold);background:var(--panel2)}
 table{border-collapse:collapse;width:100%;font-size:14px}td,th{border-bottom:1px solid var(--line);padding:6px;text-align:left}
 .ok{color:#2fd6b5}
-</style></head><body><main>{% block body %}{% endblock %}</main></body></html>
+.topnav{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end;margin-bottom:4px}
+.topnav a,.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 14px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--text);font:inherit;font-size:14px;text-decoration:none;cursor:pointer}
+.btn.primary{background:var(--gold);border-color:var(--gold);color:#0b1526;font-weight:700}
+.btn.danger{border-color:var(--red);color:#ffb3a8}
+input[type=password],input[type=file]{width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--text);font-size:16px}
+label{display:block;font-size:14px;margin:0 0 6px}
+.err{color:#ffb3a8;font-size:15px}
+html{color-scheme:dark;background:var(--bg)}
+input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{-webkit-text-fill-color:var(--text);-webkit-box-shadow:0 0 0 1000px var(--panel2) inset;caret-color:var(--text)}
+input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
+.narrow{max-width:420px;margin:8vh auto 0}
+</style></head><body><main>{% if session.get("auth") %}<nav class="topnav" aria-label="Site"><a href="/dashboard">Dashboard</a><a href="/">Upload</a><a href="/status">Status</a>
+<form method="post" action="/logout" style="margin:0"><button class="btn" type="submit">Sign out</button></form></nav>{% endif %}{% block body %}{% endblock %}</main></body></html>
