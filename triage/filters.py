@@ -143,9 +143,13 @@ def screen_dataframe(df: pd.DataFrame, p: Patterns | None = None) -> pd.DataFram
     return out
 
 
-def flag_posts(df: pd.DataFrame, p: Patterns | None = None) -> pd.DataFrame:
+def flag_posts(df: pd.DataFrame, p: Patterns | None = None, refine_fn=None) -> pd.DataFrame:
+    """Keyword-flag posts, then run the optional review stage (see triage.refine)."""
+    from . import refine as refine_mod
+
     screened = screen_dataframe(df, p)
-    return screened[screened["category"] != ""].reset_index(drop=True)
+    flagged = screened[screened["category"] != ""].reset_index(drop=True)
+    return refine_mod.refine(flagged, _find_columns(df, kw.TEXT_COLUMN_OPTIONS), complete=refine_fn)
 
 
 def read_upload(filename: str, data: bytes) -> pd.DataFrame:

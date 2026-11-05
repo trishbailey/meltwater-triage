@@ -100,3 +100,35 @@ def test_real_sample():
     out = flag_posts(df)
     print("\nSample rows:", len(df), "flagged:", out["category"].value_counts().to_dict())
     assert set(out["category"]) <= {"threat", "protest", "both"}
+
+
+def test_refine_skipped_without_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    out = flag_posts(synthetic_df())
+    assert "severity" not in out.columns
+
+
+def test_refine_with_mock_batches():
+    import json
+    from triage.refine import refine, REFINE_COLUMNS
+    calls = []
+
+    def fake(system, user):
+        posts = json.loads(user)["posts"]
+        calls.append(len(posts))
+        return json.dumps({"results": [
+            {"id": p["id"], "is_genuine": p["id"] != 1, "refined_category": "THREAT",
+             "narrative_summary": "s", "theme": "t", "severity": "High"} for p in posts]})
+
+    flagged = flag_posts(synthetic_df(), refine_fn=lambda s, u: '{"results": []}')
+    out = refine(flagged.drop(columns=REFINE_COLUMNS), ["Hit Sentence"], complete=fake, batch_size=2)
+    assert calls == [2, 1]
+    assert list(out["is_genuine"]) == [True, False, True]
+    assert set(out["refined_category"]) == {"threat"} and set(out["severity"]) == {"high"}
+
+
+def test_refine_failure_keeps_rows():
+    def boom(s, u):
+        raise RuntimeError("api down")
+    out = flag_posts(synthetic_df(), refine_fn=boom)
+    assert len(out) == 3 and out["severity"].isna().all()

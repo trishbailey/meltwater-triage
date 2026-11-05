@@ -8,3 +8,7 @@ services:
     envVars:
       - key: APP_PASSWORD
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
