@@ -1,7 +1,6 @@
 """Flask app: upload Meltwater exports, download flagged posts as Excel.
 
-A /dashboard blueprint can be registered later reusing `require_password`
-and `triage.filters.screen_dataframe`.
+Pages use the session login in `require_password`.
 """
 from __future__ import annotations
 
@@ -11,7 +10,14 @@ from datetime import datetime, timezone
 from functools import wraps
 from urllib.parse import urlsplit
 
-from flask import Flask, Response, render_template, request, send_file
+import threading
+import time
+from collections import defaultdict, deque
+from datetime import timedelta
+
+from flask import (Flask, Response, redirect, render_template, request, send_file, session,
+                   url_for)
+from werkzeug.middleware.proxy_fix import ProxyFix
 import io
 
 import pandas as pd
@@ -24,30 +30,57 @@ from triage.storage import Storage, persistence_enabled
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "50"))
 
 
-def _password_ok(expected: str) -> bool:
-    auth = request.authorization
-    if not auth:
-        return False
+SESSION_DAYS = 30
+LOGIN_MAX_FAILURES = int(os.environ.get("LOGIN_MAX_FAILURES", "5"))
+LOGIN_WINDOW_SECONDS = int(os.environ.get("LOGIN_WINDOW_SECONDS", "900"))
+_failures: dict[str, deque] = defaultdict(deque)
+_failures_lock = threading.Lock()
+
+
+def _password_ok(supplied: str, expected: str) -> bool:
     try:
-        supplied = (auth.password or "").encode("utf-8")
-        wanted = expected.encode("utf-8")
+        return hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
     except UnicodeEncodeError:
         return False
-    return hmac.compare_digest(supplied, wanted)
+
+
+def _client_key() -> str:
+    return request.remote_addr or "unknown"
+
+
+def _recent_failures(key: str, now: float) -> deque:
+    q = _failures[key]
+    while q and now - q[0] > LOGIN_WINDOW_SECONDS:
+        q.popleft()
+    return q
+
+
+def _auth_configured() -> str | None:
+    if not os.environ.get("APP_PASSWORD"):
+        return "Server not configured: APP_PASSWORD is not set."
+    if not os.environ.get("SECRET_KEY"):
+        return "Server not configured: SECRET_KEY is not set."
+    return None
 
 
 def require_password(view):
-    """HTTP basic auth; any username, password must equal APP_PASSWORD."""
+    """Signed session cookie set by /login; signed-out page requests go to /login."""
     @wraps(view)
     def wrapper(*args, **kwargs):
-        expected = os.environ.get("APP_PASSWORD")
-        if not expected:
-            return Response("Server not configured: APP_PASSWORD is not set.", 503)
-        if not _password_ok(expected):
-            return Response("Authentication required.", 401,
-                            {"WWW-Authenticate": 'Basic realm="triage"'})
+        problem = _auth_configured()
+        if problem:
+            return Response(problem, 503)
+        if not session.get("auth"):
+            nxt = request.full_path if request.method == "GET" else "/"
+            return redirect(url_for("login", next=nxt.rstrip("?")))
         return view(*args, **kwargs)
     return wrapper
+
+
+def _safe_next(target: str | None) -> str:
+    if not target or not target.startswith("/") or target.startswith("//") or "\\" in target:
+        return "/dashboard"
+    return target
 
 
 def _same_origin_upload() -> bool:
@@ -71,6 +104,50 @@ def _public_error(exc: Exception) -> str:
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+    app.config.update(SECRET_KEY=os.environ.get("SECRET_KEY") or None,
+                      SESSION_COOKIE_NAME="mt_session",
+                      SESSION_COOKIE_HTTPONLY=True,
+                      SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "1") != "0",
+                      SESSION_COOKIE_SAMESITE="Lax",
+                      PERMANENT_SESSION_LIFETIME=timedelta(days=SESSION_DAYS))
+    # Render terminates TLS at one proxy hop; trust its X-Forwarded-For/Proto.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        problem = _auth_configured()
+        if problem:
+            return Response(problem, 503)
+        nxt = _safe_next(request.values.get("next"))
+        if request.method == "GET":
+            if session.get("auth"):
+                return redirect(nxt)
+            return render_template("login.html", error=None, next=nxt)
+        if not _same_origin_upload():
+            return render_template("login.html", error="Sign-in blocked: use the form on this site.", next=nxt), 403
+        key, now = _client_key(), time.monotonic()
+        with _failures_lock:
+            if len(_recent_failures(key, now)) >= LOGIN_MAX_FAILURES:
+                return render_template("login.html", next=nxt,
+                                       error="Too many failed attempts. Wait 15 minutes and try again."), 429
+        if _password_ok(request.form.get("password", ""), os.environ["APP_PASSWORD"]):
+            with _failures_lock:
+                _failures.pop(key, None)
+            session.clear()
+            session.permanent = True
+            session["auth"] = True
+            return redirect(nxt)
+        with _failures_lock:
+            _recent_failures(key, now).append(now)
+        app.logger.warning("Failed sign-in attempt")
+        return render_template("login.html", error="Incorrect password.", next=nxt), 401
+
+    @app.post("/logout")
+    def logout():
+        if not _same_origin_upload():
+            return Response("Blocked.", 403)
+        session.clear()
+        return redirect(url_for("login"))
 
     @app.get("/healthz")
     def healthz():
@@ -133,6 +210,18 @@ def create_app() -> Flask:
             ctx = dash.build(st.load_posts(), st.load_alerts(), st.meltwater_first_seen(),
                              month=request.args.get("month"))
         return render_template("dashboard.html", **ctx)
+
+    @app.post("/alerts/<int:alert_id>/delete")
+    @require_password
+    def delete_alert(alert_id: int):
+        if not _same_origin_upload():
+            return Response("Blocked: submit the form from this site.", 403)
+        st = _storage()
+        if st is None:
+            return Response("Storage is not configured.", 503)
+        if not st.delete_alert(alert_id):
+            return Response("Alert not found.", 404)
+        return redirect(url_for("dashboard") + "#early-warning")
 
     @app.post("/api/alerts")
     def ingest_alert():
