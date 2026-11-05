@@ -304,6 +304,26 @@ def create_app() -> Flask:
         deleted = st.delete_test_posts()
         return {"deleted": deleted}
 
+
+    @app.post("/api/relevance")
+    def relevance_label():
+        if not _same_origin_upload():
+            return {"error": "Blocked: submit from this site."}, 403
+        body = request.get_json(silent=True) or {}
+        try:
+            from triage import feedback
+            out = feedback.set_label(
+                str(body.get("item_type") or ""),
+                str(body.get("item_id") or ""),
+                str(body.get("label") or ""),
+                source=(body.get("source") or None),
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}, 400
+        except RuntimeError as exc:
+            return {"error": str(exc)}, 503
+        return out
+
     @app.post("/api/alerts")
     def ingest_alert():
         expected = os.environ.get("ALERT_INGEST_TOKEN")

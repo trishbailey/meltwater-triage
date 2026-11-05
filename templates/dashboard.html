@@ -5,6 +5,8 @@
 <div class="fill" style="width:{{ it.pct }}%;background:{{ it.color or color }}"></div><span class="val">{{ "{:,}".format(it.value) }} {{ unit if it.value != 1 else unit[:-1] }}</span></div></div>
 {% endfor %}</div>{% endmacro %}
 <h1>Threat and Protest Monitor</h1>
+<p class="note"><label><input type="checkbox" id="show-hidden"> Show items marked not relevant</label></p>
+
 <section class="panel" id="map-panel"><h2>Sites, protests and threats</h2>
 <p class="how">Labeled sites are fixed. Circles mark protests (solid = past, dashed = upcoming). Diamonds mark threat targets. Use the filters to focus the map.</p>
 <div class="map-filters" role="group" aria-label="Map filters">
@@ -162,11 +164,37 @@ load("{{ map.days if map.days is not none else 'all' }}");
 {% if people %}{{ bars(people, colors.threat) }}<p class="how">Named in threat or protest posts this month.</p>{% else %}<p>No named people this month.</p>{% endif %}</section>
 </div>
 
+
+<section class="panel" id="flagged-posts"><h2>Top flagged posts this month</h2>
+<p class="how">Mark posts Relevant or Not relevant. Not relevant items are hidden unless you show them. Labels train the next review pass.</p>
+{% if flagged_sample %}
+{% for post in flagged_sample %}
+{% set plabel = relevance_labels.get('post:' ~ (post.doc_id|string), '') %}
+<div class="post {% if plabel=='not_relevant' %}item-hidden{% endif %}" data-item-type="post" data-item-id="{{ post.doc_id }}" data-source="meltwater" data-label="{{ plabel }}" {% if plabel=='not_relevant' %}hidden{% endif %}>
+{% if post.type %}<span class="tag">{{ post.type }}</span> {% endif %}
+<strong>{{ post.author or "Unknown" }}</strong>
+{{ post.summary or post.text }}
+{% if post.link %} <a href="{{ post.link }}" rel="noopener noreferrer" target="_blank">Open post</a>{% endif %}
+<div class="rel-btns" role="group" aria-label="Relevance">
+<button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if plabel=='relevant' else 'false' }}">Relevant</button>
+<button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if plabel=='not_relevant' else 'false' }}">Not relevant</button>
+</div></div>
+{% endfor %}
+{% else %}<p>No flagged posts this month.</p>{% endif %}
+</section>
+
 <section class="panel" id="posters"><h2>Recurring threat posters</h2>
 {% if posters %}<p class="how">Accounts with two or more threat posts this month. Open an account to read its posts.</p>
 {% for p in posters %}<details><summary><strong>{{ p.name or p.handle }}</strong>{% if p.handle and p.name %} ({{ p.handle }}){% endif %}: {{ p.count }} threat posts, {{ "{:,}".format(p.engagement) }} engagements</summary>
 <div class="body"><p class="note">First seen {{ p.first }}, last seen {{ p.last }}</p>
-{% for post in p.posts %}<div class="post">{% if post.type %}<span class="tag">{{ post.type }}</span> {% endif %}{{ post.summary or post.text }}{% if post.link %} <a href="{{ post.link }}" rel="noopener noreferrer" target="_blank">Open post</a>{% endif %}</div>{% endfor %}
+{% for post in p.posts %}
+{% set pid = post.doc_id or post.document_id or '' %}
+{% set plabel = relevance_labels.get('post:' ~ pid, '') if pid else '' %}
+<div class="post {% if plabel=='not_relevant' %}item-hidden{% endif %}" {% if pid %}data-item-type="post" data-item-id="{{ pid }}" data-source="meltwater" data-label="{{ plabel }}"{% if plabel=='not_relevant' %} hidden{% endif %}{% endif %}>
+{% if post.type %}<span class="tag">{{ post.type }}</span> {% endif %}{{ post.summary or post.text }}{% if post.link %} <a href="{{ post.link }}" rel="noopener noreferrer" target="_blank">Open post</a>{% endif %}
+{% if pid %}<div class="rel-btns" role="group" aria-label="Relevance"><button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if plabel=='relevant' else 'false' }}">Relevant</button>
+<button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if plabel=='not_relevant' else 'false' }}">Not relevant</button></div>{% endif %}
+</div>{% endfor %}
 </div></details>{% endfor %}{% else %}<p>No account posted threat language more than once this month.</p>{% endif %}</section>
 
 <div class="grid2">
@@ -180,17 +208,28 @@ load("{{ map.days if map.days is not none else 'all' }}");
 <p class="how">Average heat score from 0 (calm) to 10 (most heated) across scored posts; bar length is out of 10.</p>{% else %}<p>No heat-scored posts this month.</p>{% endif %}</section>
 {% endif %}
 
+{% if noisy_terms %}
+<section class="panel" id="noisy-terms"><h2>Noisiest sources (from your labels)</h2>
+<p class="how">Precision is relevant ÷ (relevant + not relevant). Lower precision means more noise.</p>
+<table><thead><tr><th>Source</th><th>Relevant</th><th>Not relevant</th><th>Precision</th></tr></thead>
+<tbody>{% for t in noisy_terms %}<tr><td>{{ t.term }}</td><td>{{ t.relevant }}</td><td>{{ t.not_relevant }}</td><td>{{ t.precision }}</td></tr>{% endfor %}</tbody></table>
+</section>
+{% endif %}
 <section class="panel" id="early-warning"><h2>Early warning from monitored channels</h2>
 <p class="how">A separate layer of alerts from X, Bluesky, Facebook, Instagram, newsletters, Seerist reports and web/RSS sources. These alerts are not counted in any Meltwater total above.</p>
 {% if alerts.items %}
 <p class="finding">{{ alerts.total }} alert{{ "s" if alerts.total != 1 }}; {{ alerts.confirmed }} later confirmed in Meltwater{% if alerts.median_lead %}, a median {{ alerts.median_lead }} earlier{% endif %}.</p>
 <div class="bars">{% for b in alerts.by_source %}<div class="bar"><div class="lab">{{ b.label }}</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ b.pct }}%;background:{{ b.color }}"></div><span class="val">{{ b.value }} alert{{ "s" if b.value != 1 }}</span></div></div>{% endfor %}</div>
-{% for a in alerts['items'] %}<details><summary><span class="chip" style="background:{{ signal_colors[a.signal_level] }}">{{ a.signal_level|capitalize }}</span>
+{% for a in alerts['items'] %}
+{% set alabel = relevance_labels.get('alert:' ~ (a.id|string), '') %}
+<details class="{{ 'item-hidden' if alabel == 'not_relevant' else '' }}" data-item-type="alert" data-item-id="{{ a.id }}" data-source="{{ a.source }}" data-label="{{ alabel }}" {% if alabel == 'not_relevant' %}hidden{% endif %}><summary><span class="chip" style="background:{{ signal_colors[a.signal_level] }}">{{ a.signal_level|capitalize }}</span>
 <span class="chip" style="background:{{ source_colors[a.source] }}">{{ source_labels[a.source] }}</span>
 {{ a.author or "Unknown author" }}{% if a.confirmed %} <span class="ok">Confirmed in Meltwater{% if a.lead %}, {{ a.lead }} earlier{% endif %}</span>{% endif %}</summary>
 <div class="body"><p class="note">First seen {{ a.first_seen }}</p>{% if a.text %}<p style="white-space:pre-line;overflow-wrap:anywhere">{{ a.text }}</p>{% endif %}
 {% for t in a.terms %}<span class="tag">{{ t }}</span>{% endfor %}
 {% if a.url %}<p><a href="{{ a.url }}" rel="noopener noreferrer" target="_blank">Open source post</a></p>{% endif %}
+<div class="rel-btns" role="group" aria-label="Relevance"><button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if alabel=='relevant' else 'false' }}">Relevant</button>
+<button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if alabel=='not_relevant' else 'false' }}">Not relevant</button></div>
 <form method="post" action="/alerts/{{ a.id }}/delete" onsubmit="return confirm('Delete this alert?')"><button class="btn danger" type="submit">Delete alert</button></form></div></details>{% endfor %}
 {% else %}<p>No early-warning alerts received yet.</p>{% endif %}</section>
 {% endblock %}

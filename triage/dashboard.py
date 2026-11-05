@@ -79,7 +79,15 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
     ctx: dict = {"colors": COLORS, "source_colors": SOURCE_COLORS, "source_labels": SOURCE_LABELS,
                  "signal_colors": SIGNAL_COLORS, "has_data": not posts.empty}
     ctx["alerts"] = build_alerts(alerts, meltwater_seen or {})
+    try:
+        from . import feedback as fb
+        ctx["relevance_labels"] = {f"{t}:{i}": lab for (t, i), lab in fb.all_labels().items()}
+        ctx["noisy_terms"] = fb.noisy_terms()
+    except Exception:
+        ctx["relevance_labels"] = {}
+        ctx["noisy_terms"] = []
     ctx.setdefault("threat_chart", {"rows": []})
+    ctx.setdefault("flagged_sample", [])
     from . import geo
     ctx["map"] = {"assets": geo.asset_markers(), "days": map_days,
                  "colors": {"asset": geo.ASSET_COLOR, "event": geo.EVENT_COLOR,
@@ -156,6 +164,15 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
 
     posters = recurring_threat_posters(t, min_count=2) if not t.empty else pd.DataFrame()
     text_cols = [_col(df, c) for c in ("hit sentence", "opening text", "title")]
+    sample = t.sort_values("eng", ascending=False).head(25) if not t.empty else t
+    ctx["flagged_sample"] = [{
+        "doc_id": r.get("document_id"),
+        "text": _text(r, text_cols),
+        "summary": r.get("narrative_summary"),
+        "type": r.get("threat_type"),
+        "link": r.get("link"),
+        "author": r.get("author_handle") or r.get("author_name") or "",
+    } for _, r in sample.iterrows()]
     hc, nc = _col(t, "author handle"), _col(t, "author name")
     plist = []
     for r in posters.head(10).itertuples() if not posters.empty else []:
@@ -166,7 +183,8 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
                       "first": str(r.first_seen)[:10], "last": str(r.last_seen)[:10],
                       "posts": [{"text": _text(row, text_cols), "link": row.get("link"),
                                  "summary": row.get("narrative_summary"),
-                                 "type": row.get("threat_type")} for _, row in mine.head(10).iterrows()]})
+                                 "type": row.get("threat_type"),
+                                 "doc_id": row.get("document_id")} for _, row in mine.head(10).iterrows()]})
     ctx["posters"] = plist
 
     ctx["protest_locations"] = _split_counts(p.get("protest_location", pd.Series(dtype=object)), p["eng"])
