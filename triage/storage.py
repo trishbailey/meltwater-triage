@@ -375,6 +375,17 @@ class Storage:
                         out[k] = created
         return out
 
+    def delete_test_posts(self) -> int:
+        """Remove synthetic load-test posts whose Document ID ends with -<digits>."""
+        import re
+        with self.engine.begin() as conn:
+            ids = [r[0] for r in conn.execute(select(posts.c.document_id)).all()]
+            doomed = [i for i in ids if re.search(r"-\d+$", str(i) or "")]
+            if not doomed:
+                return 0
+            conn.execute(posts.delete().where(posts.c.document_id.in_(doomed)))
+            return len(doomed)
+
     def delete_alert(self, alert_id: int) -> bool:
         with self.engine.begin() as conn:
             return conn.execute(alerts.delete().where(alerts.c.id == alert_id)).rowcount > 0
