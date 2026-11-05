@@ -4,20 +4,26 @@ Stores every post that was keyword-flagged OR heat-scored, deduped by Meltwater
 Document ID. Reporting periods come from the post date (Meltwater "Date":
 post_week / post_month); the upload week/month are kept as secondary fields.
 
-DATABASE_URL selects the database (Render "postgres://" URLs are accepted). With
-PERSIST_RUNS=1 and no DATABASE_URL, a local SQLite file is used
+DATABASE_URL selects the database. Render "postgres://" URLs are rewritten to
+"postgresql+psycopg://" so the psycopg v3 driver in requirements.txt is used.
+With PERSIST_RUNS=1 and no DATABASE_URL, a local SQLite file is used
 (STORAGE_SQLITE_PATH, default ./data/triage.db).
+
+`anthropic_usage` counts posts sent to Claude per UTC month for
+ANTHROPIC_MONTHLY_POST_CAP.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import re
 from datetime import date, datetime, timezone
 
 import pandas as pd
 from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, MetaData,
-                        String, Table, Text, create_engine, func, select)
+                        String, Table, Text, create_engine, event, func, select)
+from sqlalchemy.exc import IntegrityError
 
 metadata = MetaData()
 
@@ -58,14 +64,38 @@ posts = Table(
     Column("data", JSON),  # full row (all Meltwater + added columns)
 )
 
+anthropic_usage = Table(
+    "anthropic_usage", metadata,
+    Column("month", String(7), primary_key=True),  # UTC YYYY-MM
+    Column("posts_sent", Integer, nullable=False),
+)
+
+_NUMERIC_ID = re.compile(r"-?\d+\.0+")
+
+
+def normalize_database_url(url: str) -> str:
+    """Select the installed psycopg v3 driver. Leave sqlite and explicit drivers alone."""
+    url = url.strip()
+    lowered = url.lower()
+    if lowered.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+        lowered = url.lower()
+    if lowered.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
 
 def database_url() -> str:
     url = os.environ.get("DATABASE_URL")
     if url:
-        return "postgresql://" + url[len("postgres://"):] if url.startswith("postgres://") else url
+        return normalize_database_url(url)
     path = os.environ.get("STORAGE_SQLITE_PATH", os.path.join("data", "triage.db"))
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     return f"sqlite:///{path}"
+
+
+def persistence_enabled() -> bool:
+    return bool(os.environ.get("DATABASE_URL")) or os.environ.get("PERSIST_RUNS") == "1"
 
 
 def iso_week(d: date) -> str:
@@ -88,9 +118,22 @@ def _lc(row: dict, name: str):
 
 
 def _doc_id(row: dict) -> str:
+    """Stable id. Excel blanks make numeric ids floats (`12345.0`); those match `12345`."""
     v = _lc(row, "document id")
-    if v not in (None, ""):
-        return str(v).strip().strip('"')[:255]
+    if isinstance(v, bool):
+        text = ""
+    elif isinstance(v, float):
+        text = str(int(v)) if v.is_integer() else str(v).strip()
+    elif isinstance(v, int):
+        text = str(v)
+    elif v not in (None, ""):
+        text = str(v).strip().strip('"').strip()
+        if _NUMERIC_ID.fullmatch(text):
+            text = text.split(".", 1)[0]
+    else:
+        text = ""
+    if text:
+        return text[:255]
     basis = "|".join(str(_lc(row, c) or "") for c in ("url", "author handle", "hit sentence", "date"))
     return "hash:" + hashlib.sha256(basis.encode()).hexdigest()[:32]
 
@@ -123,9 +166,22 @@ def rows_to_store(all_posts: pd.DataFrame, flagged: pd.DataFrame) -> pd.DataFram
     return pd.concat(frames, ignore_index=True, sort=False) if frames else flagged.assign(is_flagged=True)
 
 
+def _utc(now: datetime | None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=timezone.utc)
+    return now.astimezone(timezone.utc)
+
+
 class Storage:
     def __init__(self, url: str | None = None):
         self.engine = create_engine(url or database_url(), future=True, pool_pre_ping=True)
+        if self.engine.dialect.name == "sqlite":
+            @event.listens_for(self.engine, "connect")
+            def _busy_timeout(dbapi_conn, _record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.close()
         metadata.create_all(self.engine)
 
     def save_run(self, rows: pd.DataFrame, filenames: list[str], rows_screened: int,
@@ -174,6 +230,47 @@ class Storage:
                     conn.execute(posts.insert().values(document_id=doc, first_run_id=run_id,
                                                        upload_week=week, upload_month=month, **values))
         return run_id
+
+    def posts_sent_this_month(self, now: datetime | None = None) -> int:
+        month = _utc(now).strftime("%Y-%m")
+        with self.engine.connect() as conn:
+            val = conn.execute(
+                select(anthropic_usage.c.posts_sent).where(anthropic_usage.c.month == month)
+            ).scalar()
+        return int(val or 0)
+
+    def reserve_monthly_posts(self, requested: int, cap: int, now: datetime | None = None) -> tuple[int, int]:
+        """Atomically reserve up to `requested` posts. Returns (reserved, total_this_month)."""
+        requested, cap = int(requested), int(cap)
+        if requested <= 0 or cap <= 0:
+            return 0, self.posts_sent_this_month(now)
+        month = _utc(now).strftime("%Y-%m")
+        for _attempt in range(5):
+            try:
+                with self.engine.begin() as conn:
+                    current = conn.execute(
+                        select(anthropic_usage.c.posts_sent).where(anthropic_usage.c.month == month)
+                    ).scalar()
+                    if current is None:
+                        take = min(requested, cap)
+                        conn.execute(anthropic_usage.insert().values(month=month, posts_sent=take))
+                        return take, take
+                    current = int(current)
+                    take = max(0, min(requested, cap - current))
+                    if take == 0:
+                        return 0, current
+                    result = conn.execute(
+                        anthropic_usage.update()
+                        .where(anthropic_usage.c.month == month,
+                               anthropic_usage.c.posts_sent == current)
+                        .values(posts_sent=current + take)
+                    )
+                    if result.rowcount != 1:
+                        continue
+                    return take, current + take
+            except IntegrityError:
+                continue
+        raise RuntimeError("Could not record monthly Claude usage")
 
     def monthly_counts(self) -> pd.DataFrame:
         """Flagged posts per post month and category."""

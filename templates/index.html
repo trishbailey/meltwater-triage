@@ -6,7 +6,7 @@
 <p>Upload one or more Meltwater exports (.xlsx or .csv). You will receive an Excel file of posts flagged for threat or protest language.</p>
 {% if error %}<p class="err">{{ error }}</p>{% endif %}
 <form method="post" action="/upload" enctype="multipart/form-data">
-  <input type="file" name="files" accept=".xlsx,.xls,.csv" multiple required>
+  <input type="file" name="files" accept=".xlsx,.csv" multiple required>
   <button type="submit">Screen posts</button>
 </form>
 </body></html>

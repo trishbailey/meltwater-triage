@@ -190,20 +190,32 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch):
     assert sheets == ["Flagged", "Recurring threat posters", "Heat by topic", "Heat (all posts)"]
     assert len(st.load_posts()) == 3  # 2 flagged + 1 heat-scored
     assert len(st.load_posts(flagged_only=True)) == 2
+    assert "__triage_src_row" not in st.load_posts().columns
 
 
 def test_workbook_neutralizes_formulas_and_bad_chars(monkeypatch):
     import io
+    import zipfile
     from openpyxl import load_workbook
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    df = pd.DataFrame({"Hit Sentence": ['=HYPERLINK("http://evil","x") bomb AUKUS\x07', "calm"],
-                       "Author Name": ["=1+1", "ok"]})
+    df = pd.DataFrame({
+        "Hit Sentence": ['=HYPERLINK("http://evil","x") bomb AUKUS\x07', "calm"],
+        "Author Name": ["+cmd|'/c calc'!A0", "ok"],
+        "\x07=Name": ["@keep", "x"],
+    })
     res = process([("f.csv", df.to_csv(index=False).encode())])  # CSV can carry control chars
-    wb = load_workbook(io.BytesIO(to_workbook(res)))
+    raw = to_workbook(res)
+    sheet = zipfile.ZipFile(io.BytesIO(raw)).read("xl/worksheets/sheet1.xml")
+    assert b"<f>" not in sheet and b"<f " not in sheet
+    wb = load_workbook(io.BytesIO(raw))
     ws = wb["Flagged"]
     types = {c.data_type for row in ws.iter_rows() for c in row}
+    values = [str(c.value) for row in ws.iter_rows() for c in row if c.value is not None]
     assert "f" not in types
-    assert any(str(c.value).startswith("=HYPERLINK") for row in ws.iter_rows() for c in row)
+    assert any(v.startswith("=HYPERLINK") for v in values)
+    assert any(v.startswith("+cmd|") for v in values)
+    assert "@keep" in values
+    assert any(v.startswith("=Name") for v in values)
 
 
 def test_storage_failure_still_returns_results(monkeypatch):
@@ -217,3 +229,157 @@ def test_storage_failure_still_returns_results(monkeypatch):
     buf = io.BytesIO(); pd.DataFrame({"Hit Sentence": ["kill the AUKUS deal"]}).to_excel(buf, index=False)
     res = process([("f.xlsx", buf.getvalue())], storage=Broken())
     assert len(res.flagged) == 1 and res.run_id is None and res.notes
+    warn = pd.read_excel(io.BytesIO(to_workbook(res)), sheet_name="Warnings")
+    assert "not saved" in str(warn.iloc[0, 0]).lower()
+
+
+def _cap_file():
+    import io
+    df = pd.DataFrame({
+        "Document ID": ["1", "2", "3", "4"],
+        "Engagement": [1, 100, 50, 3],
+        "Hit Sentence": ["kill the AUKUS deal", "bomb HMAS Stirling", "nice weather", "lovely day"],
+    })
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    return buf.getvalue()
+
+
+def _cap_fake(calls):
+    import json
+
+    def fake(system, user):
+        posts = json.loads(user)["posts"]
+        kind = "heat" if "heat_score" in system else "refine"
+        calls.append((kind, len(posts), [p.get("text") for p in posts]))
+        if kind == "heat":
+            return json.dumps({"results": [
+                {"id": p["id"], "heat_score": 1, "topic": "t"} for p in posts]})
+        return json.dumps({"results": [
+            {"id": p["id"], "is_genuine": True, "refined_category": "threat", "severity": "low"}
+            for p in posts]})
+
+    return fake
+
+
+def test_monthly_cap_prefers_review_then_stops(tmp_path, monkeypatch):
+    import io
+    monkeypatch.setenv("ANTHROPIC_MONTHLY_POST_CAP", "3")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("PERSIST_RUNS", raising=False)
+    st = Storage(f"sqlite:///{tmp_path/'cap.db'}")
+    calls = []
+    data = _cap_file()
+    res = process([("f.xlsx", data)], refine_fn=_cap_fake(calls), heat_fn=_cap_fake(calls), storage=st)
+    assert calls[0][0] == "refine" and calls[0][1] == 2
+    assert calls[1] == ("heat", 1, ["bomb HMAS Stirling"])
+    assert st.posts_sent_this_month() == 3
+    assert len(res.flagged) == 2
+    calls.clear()
+    res2 = process([("f.xlsx", data)], refine_fn=_cap_fake(calls), heat_fn=_cap_fake(calls), storage=st)
+    assert calls == []
+    assert len(res2.flagged) == 2
+    assert st.posts_sent_this_month() == 3
+    warn = pd.read_excel(io.BytesIO(to_workbook(res2)), sheet_name="Warnings")
+    text = " ".join(warn["warning"].astype(str))
+    assert "monthly limit" in text and "Keyword screening" in text
+
+
+def test_monthly_cap_requires_a_database(monkeypatch):
+    import io
+    monkeypatch.setenv("ANTHROPIC_MONTHLY_POST_CAP", "50")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("PERSIST_RUNS", raising=False)
+    calls = []
+    res = process([("f.xlsx", _cap_file())], refine_fn=_cap_fake(calls), heat_fn=_cap_fake(calls))
+    assert calls == []
+    assert len(res.flagged) == 2
+    warn = pd.read_excel(io.BytesIO(to_workbook(res)), sheet_name="Warnings")
+    assert "no database" in str(warn.iloc[0, 0]).lower()
+
+
+def test_invalid_monthly_cap_skips_claude(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_MONTHLY_POST_CAP", "lots")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    st = Storage(f"sqlite:///{tmp_path/'bad.db'}")
+    calls = []
+    res = process([("f.xlsx", _cap_file())], refine_fn=_cap_fake(calls), heat_fn=_cap_fake(calls), storage=st)
+    assert calls == [] and res.notes
+    assert "ANTHROPIC_MONTHLY_POST_CAP" in res.notes[0]
+    assert st.posts_sent_this_month() == 0
+
+
+def test_usage_resets_next_month(tmp_path):
+    from datetime import datetime, timezone
+    st = Storage(f"sqlite:///{tmp_path/'m.db'}")
+    may = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    june = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    assert st.reserve_monthly_posts(2, 2, now=may) == (2, 2)
+    assert st.reserve_monthly_posts(1, 2, now=may) == (0, 2)
+    assert st.reserve_monthly_posts(1, 2, now=june) == (1, 1)
+    assert st.posts_sent_this_month(may) == 2
+    assert st.posts_sent_this_month(june) == 1
+
+
+def test_reserve_does_not_exceed_cap_under_contention(tmp_path):
+    import threading
+    from datetime import datetime, timezone
+    st = Storage(f"sqlite:///{tmp_path/'race.db'}")
+    now = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    results = []
+
+    def worker():
+        results.append(st.reserve_monthly_posts(1, 5, now=now)[0])
+
+    threads = [threading.Thread(target=worker) for _ in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sum(results) == 5
+    assert st.posts_sent_this_month(now) == 5
+
+
+def test_document_ids_dedupe_across_excel_floats(tmp_path):
+    st = Storage(f"sqlite:///{tmp_path/'id.db'}")
+    rows = pd.DataFrame({
+        "Document ID": [12345.0, "12345", "  ", '"'],
+        "Hit Sentence": ["kill AUKUS one", "kill AUKUS two", "bomb HMAS Stirling", "attack the defence minister"],
+        "Date": ["2026-10-01"] * 4,
+        "category": ["threat"] * 4,
+        "is_flagged": [True] * 4,
+    })
+    st.save_run(rows, ["a.xlsx"], 4)
+    assert len(st.load_posts()) == 3
+
+
+def test_excel_blank_does_not_float_document_id(tmp_path, monkeypatch):
+    import io
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MONTHLY_POST_CAP", raising=False)
+    df = pd.DataFrame({
+        "Document ID": [12345, None],
+        "Hit Sentence": ["kill the AUKUS deal", "bomb HMAS Stirling"],
+        "Date": ["2026-10-01", "2026-10-02"],
+    })
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    st = Storage(f"sqlite:///{tmp_path/'xlsx.db'}")
+    process([("a.xlsx", buf.getvalue())], storage=st)
+    ids = {str(v) for v in st.load_posts()["Document ID"].tolist()}
+    assert "12345" in ids
+    assert "12345.0" not in ids
+
+
+def test_postgres_url_uses_psycopg_driver(monkeypatch):
+    from sqlalchemy import create_engine
+    from triage.storage import database_url, normalize_database_url
+    monkeypatch.setenv("DATABASE_URL", "postgres://user:pw@db.internal:5432/triage?sslmode=require")
+    url = database_url()
+    assert url == "postgresql+psycopg://user:pw@db.internal:5432/triage?sslmode=require"
+    assert normalize_database_url("postgresql+psycopg2://u:pw@h/db") == "postgresql+psycopg2://u:pw@h/db"
+    engine = create_engine(url)
+    assert engine.dialect.driver == "psycopg"
+    engine.dispose()

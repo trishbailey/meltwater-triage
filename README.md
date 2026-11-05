@@ -3,7 +3,7 @@
 Private web app that screens Meltwater exports for threat and protest language.
 
 ## Use
-Upload one or more Meltwater downloads (`.xlsx`, `.xls`, `.csv`). The app returns an Excel
+Upload one or more Meltwater downloads (`.xlsx` or `.csv`). The app returns an Excel
 file of flagged posts with all original columns plus `uploaded_file`, `worksheet`, `link`,
 `matched_keywords`, `category` (`threat` / `protest` / `both`) and `mobilization_status`.
 
@@ -27,7 +27,19 @@ If `ANTHROPIC_API_KEY` is set, each flagged post is reviewed by Anthropic Claude
 `threat_type`, `targets`, `named_individuals` (lists stored as `; `-separated text). Without a key
 the stage is skipped. Settings: `REFINE_MODEL` (default `claude-haiku-4-5`),
 `REFINE_BATCH_SIZE` (default 20), `REFINE_DISABLED=1` to turn it off. A failed batch
-leaves those columns blank and keeps the keyword results. Code: `triage/refine.py`.
+leaves those columns blank and keeps the keyword results. Each request uses
+`ANTHROPIC_MAX_TOKENS` (default 8192), `ANTHROPIC_TIMEOUT_SECONDS` (default 120),
+and `ANTHROPIC_MAX_RETRIES` (default 0, so one batch is one API call). Code: `triage/refine.py`.
+
+### Monthly Claude cap
+`ANTHROPIC_MONTHLY_POST_CAP` limits how many posts are sent to Claude in a UTC month.
+Every post included in a review or heat request counts, and the total is stored in
+the `anthropic_usage` table. After the cap is reached, later posts are not sent and
+the workbook's **Warnings** sheet says so. Keyword flags are still returned. Review
+runs before heat, so a tight cap is spent on flagged posts first. The guard does
+nothing when the variable is unset. It skips Claude entirely when the variable is
+set but `DATABASE_URL` / `PERSIST_RUNS` is not, because the count would reset on the
+next process. Invalid values also skip Claude.
 
 Protest fields from the review: `protest_location`, `protest_topic`, `organizers_or_groups`,
 `event_date`, `scale_or_turnout`.
@@ -44,19 +56,25 @@ Covers all screened posts, not just keyword hits. Each scored post gets `heat_sc
 `heat_topic`, `heated_phrases`, `heat_sampled`. Cost is capped by `HEAT_MAX_POSTS`
 (default 300; above that the highest-engagement posts are scored first) and batched by
 `HEAT_BATCH_SIZE` (default 25). `HEAT_DISABLED=1` turns it off; it is skipped without
-`ANTHROPIC_API_KEY`.
+`ANTHROPIC_API_KEY`. Heat shares `ANTHROPIC_MONTHLY_POST_CAP` with the review stage.
 
 ## Output workbook
-Sheets: `Flagged`, `Recurring threat posters` (handle, name, threat post count, total
+Sheets: `Warnings` (only when the monthly cap skipped Claude, or the database save
+failed), `Flagged`, `Recurring threat posters` (handle, name, threat post count, total
 engagement, first/last seen; 2+ threat posts), and, when heat ran, `Heat by topic` (ranked
-by average then total heat, with engagement) and `Heat (all posts)`.
+by average then total heat, with engagement) and `Heat (all posts)`. Cell text is
+written as text, including values that start with `=`.
 
 ## Storage
 `triage/storage.py` (SQLAlchemy) stores each upload run and every flagged or heat-scored post, deduped by
 Document ID. Reporting periods use the post date (`post_week`, `post_month` from Meltwater Date), with upload week/month kept as secondary fields. Helpers: `monthly_counts`, `monthly_heat`, `load_posts`. Enabled when
-`DATABASE_URL` is set (Postgres) or `PERSIST_RUNS=1` (local SQLite at
+`DATABASE_URL` is set (Postgres; `postgres://` URLs are rewritten to
+`postgresql+psycopg://`) or `PERSIST_RUNS=1` (local SQLite at
 `STORAGE_SQLITE_PATH`, default `data/triage.db`). Render's free filesystem is temporary,
-so lasting storage needs a Render Postgres database.
+so lasting storage and the monthly Claude cap need a Render Postgres database.
+Uploads are limited by `MAX_UPLOAD_MB` (default 50), `MAX_UNCOMPRESSED_MB` (default 200,
+xlsx zip expansion), and `MAX_SCREEN_ROWS` (default 100000). Document IDs are read as
+text so a blank cell does not turn `12345` into `12345.0`.
 
 ## Run locally
 ```
@@ -68,7 +86,9 @@ MELTWATER_SAMPLE_PATH=/path/to/export.xlsx pytest -s   # also checks a real expo
 
 ## Deploy (Render)
 `render.yaml` defines a Python web service (gunicorn). Set `APP_PASSWORD` in the Render
-dashboard. Requests use HTTP basic auth (any username, password = `APP_PASSWORD`).
+dashboard, along with `ANTHROPIC_MONTHLY_POST_CAP` if you want a monthly Claude limit.
+Requests use HTTP basic auth (any username, password = `APP_PASSWORD`). Browsers that
+send a cross-site `Origin` on `POST /upload` are rejected.
 
 ## Data
 Never commit client exports. `.gitignore` excludes `*.xlsx`, `*.xls`, `*.csv`.

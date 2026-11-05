@@ -3,6 +3,9 @@
 Enabled only when ANTHROPIC_API_KEY is set (and REFINE_DISABLED is not "1").
 The key is read from the environment and is never logged or printed.
 Model: REFINE_MODEL (default claude-haiku-4-5). Batch size: REFINE_BATCH_SIZE (default 20).
+Output limit: ANTHROPIC_MAX_TOKENS (default 8192). Timeout: ANTHROPIC_TIMEOUT_SECONDS
+(default 120). ANTHROPIC_MAX_RETRIES defaults to 0 so one batch is one request.
+ANTHROPIC_MONTHLY_POST_CAP (see triage.budget) can skip this stage.
 """
 from __future__ import annotations
 
@@ -55,20 +58,50 @@ def is_enabled() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY")) and os.environ.get("REFINE_DISABLED") != "1"
 
 
-def anthropic_complete(max_tokens: int = 4096) -> CompleteFn:
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return default
+    return min(hi, max(lo, value))
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def anthropic_complete(max_tokens: int | None = None) -> CompleteFn:
     import anthropic  # imported lazily so the dependency is optional
 
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
+    # Reads ANTHROPIC_API_KEY from the environment. Retries default to 0 so the
+    # monthly post cap counts each request once.
+    client = anthropic.Anthropic(
+        timeout=_env_float("ANTHROPIC_TIMEOUT_SECONDS", 120.0),
+        max_retries=_env_int("ANTHROPIC_MAX_RETRIES", 0, 0, 5),
+    )
     model = os.environ.get("REFINE_MODEL", DEFAULT_MODEL)
+    limit = max_tokens if max_tokens is not None else _env_int("ANTHROPIC_MAX_TOKENS", 8192, 256, 64000)
 
     def complete(system: str, user: str) -> str:
         resp = client.messages.create(
             model=model,
-            max_tokens=max_tokens,
+            max_tokens=limit,
             temperature=0,
             system=system + " Reply with the JSON object only, no other text.",
             messages=[{"role": "user", "content": user}],
         )
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            log.warning("Claude response hit the output token limit")
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
         start, end = text.find("{"), text.rfind("}")
         return text[start:end + 1] if start != -1 else "{}"
@@ -84,12 +117,26 @@ def _post_payload(i: int, row: pd.Series, text_cols: list) -> dict:
             "matched_keywords": row.get("matched_keywords", "")}
 
 
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "yes", "1"}:
+            return True
+        if text in {"false", "no", "0"}:
+            return False
+    return None
+
+
 def _clean(item: dict) -> dict:
     cat = str(item.get("refined_category", "")).lower()
     sev = str(item.get("severity", "")).lower()
     tt = str(item.get("threat_type", "")).strip().lower()
     return {
-        "is_genuine": bool(item.get("is_genuine")) if "is_genuine" in item else None,
+        "is_genuine": _as_bool(item.get("is_genuine")) if "is_genuine" in item else None,
         "refined_category": cat if cat in VALID_CATEGORIES else "",
         "narrative_summary": str(item.get("narrative_summary", ""))[:500],
         "theme": str(item.get("theme", ""))[:100],
@@ -123,26 +170,54 @@ def _join_list(value) -> str:
     return "; ".join(seen)[:500]
 
 
+def _positive_int(value, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _absorb(results: dict, reply_text: str, clean) -> None:
+    reply = json.loads(reply_text)
+    if not isinstance(reply, dict):
+        return
+    for item in reply.get("results", []):
+        if not isinstance(item, dict) or "id" not in item:
+            continue
+        try:
+            results[int(item["id"])] = clean(item)
+        except (TypeError, ValueError, OverflowError):
+            continue
+
+
 def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None = None,
-           batch_size: int | None = None) -> pd.DataFrame:
+           batch_size: int | None = None, budget=None) -> pd.DataFrame:
     """Add REFINE_COLUMNS to `flagged`. Returns input unchanged if disabled."""
     if complete is None:
         if not is_enabled():
             return flagged
         complete = anthropic_complete()
+    if budget is None:
+        from .budget import resolve_budget
+        budget = resolve_budget()
     if flagged.empty:
         return flagged.assign(**{c: pd.Series(dtype=object) for c in REFINE_COLUMNS})
-    batch_size = batch_size or int(os.environ.get("REFINE_BATCH_SIZE", "20"))
+    batch_size = _positive_int(
+        batch_size if batch_size is not None else os.environ.get("REFINE_BATCH_SIZE", "20"), 20)
     out = flagged.reset_index(drop=True).copy()
     results: dict[int, dict] = {}
-    for start in range(0, len(out), batch_size):
-        chunk = out.iloc[start:start + batch_size]
+    ids = list(range(len(out)))
+    for start in range(0, len(ids), batch_size):
+        chunk_ids = ids[start:start + batch_size]
+        allowed = budget.take(len(chunk_ids))
+        if allowed <= 0:
+            break
+        chunk_ids = chunk_ids[:allowed]
+        chunk = out.iloc[chunk_ids]
         payload = [_post_payload(int(i), r, text_cols) for i, r in chunk.iterrows()]
         try:
-            reply = json.loads(complete(SYSTEM_PROMPT, json.dumps({"posts": payload})))
-            for item in reply.get("results", []):
-                if isinstance(item, dict) and "id" in item:
-                    results[int(item["id"])] = _clean(item)
+            _absorb(results, complete(SYSTEM_PROMPT, json.dumps({"posts": payload})), _clean)
         except Exception as exc:  # keep keyword results if the review fails
             log.warning("Refinement batch at row %d failed: %s", start, type(exc).__name__)
     for col in REFINE_COLUMNS:

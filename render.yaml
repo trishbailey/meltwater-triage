@@ -14,4 +14,8 @@ services:
         value: claude-haiku-4-5
       - key: HEAT_MAX_POSTS
         value: "300"
-      # Add DATABASE_URL from a Render Postgres instance to keep month-to-month history.
+      # Posts sent to Claude per UTC month (review and heat each count). Unset means no monthly limit.
+      - key: ANTHROPIC_MONTHLY_POST_CAP
+        sync: false
+      # Add DATABASE_URL from a Render Postgres instance to keep month-to-month history
+      # and to enforce ANTHROPIC_MONTHLY_POST_CAP across deploys.

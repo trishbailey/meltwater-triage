@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import io
+import os
 import re
+import zipfile
 from typing import Iterable
 
 import pandas as pd
@@ -177,6 +179,25 @@ def _find_columns(df: pd.DataFrame, options: list[str]) -> list:
     return [lower[o] for o in options if o in lower]
 
 
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return default
+    return value if value >= minimum else default
+
+
+def max_screen_rows() -> int:
+    return _env_int("MAX_SCREEN_ROWS", 100_000)
+
+
+def max_uncompressed_bytes() -> int:
+    return _env_int("MAX_UNCOMPRESSED_MB", 200) * 1024 * 1024
+
+
 def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     """Parse engagement columns as numbers (handles "1,234" and blanks)."""
     out = df.copy()
@@ -191,8 +212,10 @@ def screen_dataframe(df: pd.DataFrame, p: Patterns | None = None) -> pd.DataFram
     p = p or Patterns()
     text_cols = _find_columns(df, kw.TEXT_COLUMN_OPTIONS)
     if not text_cols:
-        raise ValueError("No post-text column found. Available columns: "
-                         + ", ".join(map(str, df.columns)))
+        cols = ", ".join(map(str, df.columns))
+        if len(cols) > 300:
+            cols = cols[:300] + "…"
+        raise ValueError("No post-text column found. Available columns: " + cols)
     text = df[text_cols].astype(object).fillna("").astype(str).agg(" ".join, axis=1).str.strip()
     results = pd.DataFrame([screen_text(t, p) for t in text], index=df.index)
     out = coerce_numeric(df)
@@ -212,48 +235,110 @@ def flag_posts(df: pd.DataFrame, p: Patterns | None = None, refine_fn=None) -> p
     return refine_mod.refine(flagged, _find_columns(df, kw.TEXT_COLUMN_OPTIONS), complete=refine_fn)
 
 
-def read_upload(filename: str, data: bytes) -> pd.DataFrame:
-    """Read one Meltwater export (xlsx/xls/csv), all non-empty sheets."""
+def _row_limit_error() -> ValueError:
+    return ValueError(
+        f"Upload exceeds {max_screen_rows()} rows. Split the export or raise MAX_SCREEN_ROWS."
+    )
+
+
+def _too_large() -> ValueError:
+    limit = max_uncompressed_bytes() // (1024 * 1024)
+    return ValueError(f"Spreadsheet expands beyond {limit} MB and was not opened.")
+
+
+def _guard_xlsx(data: bytes) -> None:
+    """Reject spreadsheets that expand past MAX_UNCOMPRESSED_MB, including lying zip headers."""
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise ValueError("Could not read the spreadsheet.") from exc
+    limit = max_uncompressed_bytes()
+    total = 0
+    with archive:
+        for info in archive.infolist():
+            if info.file_size > limit or total + max(0, info.file_size) > limit:
+                raise _too_large()
+            got = 0
+            try:
+                handle = archive.open(info)
+            except RuntimeError as exc:  # encrypted or otherwise unreadable
+                raise ValueError("Could not read the spreadsheet.") from exc
+            with handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    got += len(chunk)
+                    if got > limit or total + got > limit:
+                        raise _too_large()
+            total += got
+
+
+def _file_label(filename: str) -> str:
+    label = str(filename).replace("\\", "/").split("/")[-1]
+    label = "".join(ch for ch in label if ch.isprintable())
+    return (label[:120] or "upload")
+
+
+def read_upload(filename: str, data: bytes, max_rows: int | None = None) -> pd.DataFrame:
+    """Read one Meltwater export (xlsx/csv), all non-empty sheets."""
     name = filename.lower()
+    label = _file_label(filename)
+    budget = max_screen_rows() if max_rows is None else max_rows
     frames = []
-    if name.endswith((".xlsx", ".xls")):
+    if name.endswith(".xls") and not name.endswith(".xlsx"):
+        raise ValueError("Legacy .xls files are not supported. Save the export as .xlsx or .csv.")
+    if name.endswith(".xlsx"):
+        _guard_xlsx(data)
         book = pd.ExcelFile(io.BytesIO(data))
         for sheet in book.sheet_names:
-            sdf = pd.read_excel(book, sheet_name=sheet)
+            sdf = pd.read_excel(book, sheet_name=sheet, nrows=max(budget, 0) + 1, dtype=str)
             if sdf.empty:
                 continue
-            sdf["uploaded_file"] = filename
+            if len(sdf) > budget:
+                raise _row_limit_error()
+            budget -= len(sdf)
+            sdf["uploaded_file"] = label
             sdf["worksheet"] = sheet
             frames.append(sdf)
     elif name.endswith(".csv"):
-        sdf = _read_csv(data)
-        sdf["uploaded_file"] = filename
+        sdf = _read_csv(data, nrows=budget + 1)
+        if len(sdf) > budget:
+            raise _row_limit_error()
+        sdf["uploaded_file"] = label
         sdf["worksheet"] = ""
         frames.append(sdf)
     else:
-        raise ValueError(f"Unsupported file type: {filename}")
+        raise ValueError(f"Unsupported file type: {label}")
     return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
 
 
-def _read_csv(data: bytes) -> pd.DataFrame:
-    # Meltwater CSV exports are often UTF-16 tab-separated.
+def _read_csv(data: bytes, nrows: int | None = None) -> pd.DataFrame:
+    # Meltwater CSV exports are often UTF-16 tab-separated. dtype=str keeps ids intact.
     for enc, sep in (("utf-16", "\t"), ("utf-8-sig", None), ("latin-1", None)):
         try:
-            return pd.read_csv(io.BytesIO(data), encoding=enc, sep=sep, engine="python")
+            return pd.read_csv(io.BytesIO(data), encoding=enc, sep=sep, engine="python",
+                               dtype=str, nrows=nrows)
         except (UnicodeError, pd.errors.ParserError):
             continue
     raise ValueError("Could not parse CSV file")
 
 
 def combine_uploads(files: list[tuple[str, bytes]]) -> pd.DataFrame:
-    frames = [f for f in (read_upload(n, d) for n, d in files) if not f.empty]
+    limit = max_screen_rows()
+    frames = []
+    total = 0
+    for name, data in files:
+        frame = read_upload(name, data, max_rows=limit - total)
+        if frame.empty:
+            continue
+        total += len(frame)
+        frames.append(frame)
     if not frames:
         raise ValueError("No non-empty worksheets found in the uploaded files.")
     return pd.concat(frames, ignore_index=True, sort=False)
 
 
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-        df.to_excel(xw, index=False, sheet_name="Flagged")
-    return buf.getvalue()
+    from .excel_safe import write_sheets
+    return write_sheets([("Flagged", df)])
