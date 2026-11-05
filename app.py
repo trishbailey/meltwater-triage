@@ -56,6 +56,9 @@ def create_app() -> Flask:
             result = process(files)
         except ValueError as exc:
             return render_template("index.html", error=str(exc)), 400
+        except Exception as exc:  # unreadable/corrupt file: no stack trace to the user
+            app.logger.warning("Upload failed: %s", type(exc).__name__)
+            return render_template("index.html", error="Could not read the uploaded file(s)."), 400
         name = f"flagged_posts_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.xlsx"
         return send_file(io.BytesIO(to_workbook(result)), as_attachment=True, download_name=name,
                          mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

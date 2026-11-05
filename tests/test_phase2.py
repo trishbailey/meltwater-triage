@@ -190,3 +190,30 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch):
     assert sheets == ["Flagged", "Recurring threat posters", "Heat by topic", "Heat (all posts)"]
     assert len(st.load_posts()) == 3  # 2 flagged + 1 heat-scored
     assert len(st.load_posts(flagged_only=True)) == 2
+
+
+def test_workbook_neutralizes_formulas_and_bad_chars(monkeypatch):
+    import io
+    from openpyxl import load_workbook
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    df = pd.DataFrame({"Hit Sentence": ['=HYPERLINK("http://evil","x") bomb AUKUS\x07', "calm"],
+                       "Author Name": ["=1+1", "ok"]})
+    res = process([("f.csv", df.to_csv(index=False).encode())])  # CSV can carry control chars
+    wb = load_workbook(io.BytesIO(to_workbook(res)))
+    ws = wb["Flagged"]
+    types = {c.data_type for row in ws.iter_rows() for c in row}
+    assert "f" not in types
+    assert any(str(c.value).startswith("=HYPERLINK") for row in ws.iter_rows() for c in row)
+
+
+def test_storage_failure_still_returns_results(monkeypatch):
+    import io
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    class Broken:
+        def save_run(self, *a, **k):
+            raise RuntimeError("db down")
+
+    buf = io.BytesIO(); pd.DataFrame({"Hit Sentence": ["kill the AUKUS deal"]}).to_excel(buf, index=False)
+    res = process([("f.xlsx", buf.getvalue())], storage=Broken())
+    assert len(res.flagged) == 1 and res.run_id is None and res.notes
