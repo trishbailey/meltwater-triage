@@ -1,10 +1,6 @@
-{% extends "_base.html" %}{% block title %}Upload exports{% endblock %}{% block body %}
-<h1>Upload Meltwater exports</h1>
-<div class="panel"><p>Upload one or more Meltwater exports (.xlsx or .csv). You will receive an Excel file of posts flagged for threat or protest language.</p>
+{% extends "_base.html" %}{% block title %}Upload Meltwater export{% endblock %}{% block body %}
+<h1>Upload Meltwater export</h1>
+<div class="panel"><p>Use the <strong>Add data</strong> panel to upload an export. On a phone, open it with the Add data button.</p>
 {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
-<form id="upform" data-unit="posts" method="post" action="/upload" enctype="multipart/form-data">
-<label for="files">Export files</label>
-<input id="files" type="file" name="files" accept=".xlsx,.csv" multiple required>
-<p><button class="btn primary" type="submit">Screen posts</button></p></form>
-{% include "_progress.html" %}</div>
+<p><a href="/">Back to the dashboard</a></p></div>
 {% endblock %}

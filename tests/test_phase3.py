@@ -162,7 +162,9 @@ def test_seerist_color_distinct_from_everything():
 
 
 def test_pages_public_and_robots(client):
-    for path in ("/", "/dashboard", "/status", "/seerist"):
+    home = client.get("/")
+    assert home.status_code == 302 and "/dashboard" in home.headers["Location"]
+    for path in ("/dashboard", "/status", "/seerist", "/upload"):
         r = client.get(path)
         assert r.status_code == 200, path
         assert 'name="robots" content="noindex, nofollow"' in r.get_data(as_text=True)

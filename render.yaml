@@ -3,7 +3,7 @@ services:
     name: meltwater-triage
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 600
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 600
     healthCheckPath: /healthz
     envVars:
       - key: APP_PASSWORD

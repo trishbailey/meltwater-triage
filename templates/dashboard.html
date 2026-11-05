@@ -1,4 +1,5 @@
 {% extends "_base.html" %}{% block title %}Threat and Protest Monitor{% endblock %}{% block body %}
+<p class="intro">Live picture of threat and protest signals from Meltwater exports and monitored channels. Use <strong>Add data</strong> to upload a new export.</p>
 {% macro bars(items, color, unit="posts") %}<div class="bars">{% for it in items %}
 <div class="bar"><div class="lab">{{ it.label }}</div><div class="track" style="display:flex;align-items:center">
 <div class="fill" style="width:{{ it.pct }}%;background:{{ it.color or color }}"></div><span class="val">{{ "{:,}".format(it.value) }} {{ unit if it.value != 1 else unit[:-1] }}</span></div></div>

@@ -5,7 +5,21 @@
 :root{--bg:#0b1526;--panel:#12203a;--panel2:#0f1b31;--line:#24365a;--text:#e6e9ef;--muted:#9aa6b8;--gold:#c8a24a;--red:#c0504d}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-main{padding:16px;width:100%}
+.shell{display:flex;min-height:100vh;width:100%}
+.side{width:320px;flex:0 0 320px;background:var(--panel);border-right:1px solid var(--line);padding:14px;overflow:auto}
+.main{flex:1;min-width:0;padding:16px;width:100%}
+.side h2{font-size:16px;margin:0 0 8px}.side h3{font-size:14px;margin:14px 0 6px;color:var(--gold)}
+.side .card{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:0 0 12px}
+.side p{font-size:13px;color:var(--muted);margin:0 0 8px}
+.drawer-toggle{display:none;min-height:44px;padding:0 14px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--text);font:inherit;font-size:14px;cursor:pointer;margin:0 0 10px}
+.backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20}
+@media (max-width:720px){
+  .shell{display:block}
+  .drawer-toggle{display:inline-flex;align-items:center}
+  .side{position:fixed;top:0;left:0;bottom:0;z-index:30;transform:translateX(-105%);transition:transform .2s ease;width:min(92vw,340px);box-shadow:0 0 24px rgba(0,0,0,.4)}
+  body.drawer-open .side{transform:translateX(0)}
+  body.drawer-open .backdrop{display:block}
+}
 h1{font-size:24px;margin:4px 0 6px}h2{font-size:18px;margin:0 0 4px}h3{font-size:15px;margin:12px 0 6px}
 p{margin:6px 0}a{color:#7cc4ff}
 .intro{color:var(--text)}.note,.how{color:var(--muted);font-size:13px}
@@ -28,7 +42,7 @@ details{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
 summary{cursor:pointer;padding:12px;min-height:44px;font-size:14px}
 details .body{padding:0 12px 12px}
 .post{border-top:1px solid var(--line);padding:8px 0;font-size:14px}
-.chip{display:inline-block;border-radius:999px;padding:2px 10px;font-size:13px;font-weight:600;color:#0b1526}
+.chip{display:inline-block;border-radius:999px;padding:2px 10px;font-size:13px;font-weight:600;color:#0b1526;max-width:100%;overflow-wrap:anywhere}
 .tag{display:inline-block;border:1px solid var(--line);border-radius:6px;padding:1px 8px;font-size:13px;margin:2px}
 .months{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
 .months a{display:inline-flex;align-items:center;min-height:44px;padding:0 14px;border:1px solid var(--line);border-radius:8px;text-decoration:none;color:var(--text);font-size:14px}
@@ -42,16 +56,46 @@ table{border-collapse:collapse;width:100%;font-size:14px}td,th{border-bottom:1px
 input[type=password],input[type=file]{width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--text);font-size:16px}
 label{display:block;font-size:14px;margin:0 0 6px}
 .err{color:#ffb3a8;font-size:15px}
-html{color-scheme:dark;background:var(--bg)}
-input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{-webkit-text-fill-color:var(--text);-webkit-box-shadow:0 0 0 1000px var(--panel2) inset;caret-color:var(--text)}
-input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
 .progress{margin:10px 0}.pstage{font-size:15px;margin:4px 0}
 .ptrack{background:var(--panel2);border:1px solid var(--line);border-radius:6px;height:16px;overflow:hidden;width:100%}
 .pfill{height:100%;width:0;background:var(--gold);transition:width .3s}
 .pfill.busy{width:100%!important;background:repeating-linear-gradient(45deg,var(--gold) 0 12px,#a8873a 12px 24px);background-size:34px 34px;animation:pmove 1s linear infinite}
 @keyframes pmove{to{background-position:34px 0}}
 .okmsg{color:#2fd6b5;font-size:15px}
-.chip{max-width:100%;overflow-wrap:anywhere}
 .narrow{max-width:420px;margin:8vh auto 0}
-</style></head><body><main><nav class="topnav" aria-label="Site"><a href="/dashboard">Dashboard</a><a href="/">Upload</a><a href="/seerist">Seerist</a><a href="/status">Status</a>
-</nav>{% block body %}{% endblock %}</main></body></html>
+html{color-scheme:dark;background:var(--bg)}
+input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{-webkit-text-fill-color:var(--text);-webkit-box-shadow:0 0 0 1000px var(--panel2) inset;caret-color:var(--text)}
+input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
+</style></head><body>
+<div class="backdrop" id="backdrop" onclick="document.body.classList.remove('drawer-open')"></div>
+<div class="shell">
+<aside class="side" id="side" aria-label="Upload tools">
+<button type="button" class="drawer-toggle" style="display:none" aria-hidden="true"></button>
+<h2>Add data</h2>
+<div class="card">
+<h3>Meltwater export</h3>
+<p>Upload an Excel or CSV export. Posts are screened for threat and protest language, scored, saved to the dashboard, and offered as an Excel download of the flagged rows.</p>
+<form class="progress-form" data-unit="posts" method="post" action="/upload" enctype="multipart/form-data">
+<label for="files">Export files</label>
+<input id="files" type="file" name="files" accept=".xlsx,.csv" multiple required>
+<p style="margin-top:10px"><button class="btn primary" type="submit">Screen posts</button></p></form>
+</div>
+<div class="card">
+<h3>Seerist report</h3>
+<p>Upload a Seerist PDF export. Items are added to early-warning alerts on the dashboard.</p>
+<p><a class="btn" href="/seerist">Open Seerist upload</a></p>
+</div>
+<p><a href="/status">Usage and storage status</a></p>
+</aside>
+<div class="main">
+<button type="button" class="drawer-toggle" id="openDrawer" aria-controls="side" aria-expanded="false">Add data</button>
+<nav class="topnav" aria-label="Site"><a href="/">Dashboard</a><a href="/status">Status</a></nav>
+{% block body %}{% endblock %}
+</div></div>
+<script>
+(function(){var b=document.getElementById("openDrawer");if(!b)return;
+b.addEventListener("click",function(){var open=document.body.classList.toggle("drawer-open");b.setAttribute("aria-expanded",open?"true":"false");});
+})();
+</script>
+{% include "_progress.html" %}
+</body></html>
