@@ -103,7 +103,7 @@ def test_real_sample():
 
 
 def test_refine_skipped_without_key(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     out = flag_posts(synthetic_df())
     assert "severity" not in out.columns
 

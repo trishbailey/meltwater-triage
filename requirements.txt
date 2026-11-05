@@ -2,4 +2,4 @@ flask>=3.0
 pandas>=2.1
 openpyxl>=3.1
 gunicorn>=22.0
-openai>=1.40
+anthropic>=0.40

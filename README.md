@@ -19,9 +19,9 @@ file of flagged posts with all original columns plus `uploaded_file`, `worksheet
 Edit all keyword lists in **`triage/keywords.py`**.
 
 ## Optional review stage
-If `OPENAI_API_KEY` is set, each flagged post is reviewed in batches and gains columns
+If `ANTHROPIC_API_KEY` is set, each flagged post is reviewed by Anthropic Claude in batches and gains columns
 `is_genuine`, `refined_category`, `narrative_summary`, `theme`, `severity`. Without a key
-the stage is skipped. Settings: `OPENAI_MODEL` (default `gpt-4o-mini`),
+the stage is skipped. Settings: `REFINE_MODEL` (default `claude-haiku-4-5`),
 `REFINE_BATCH_SIZE` (default 20), `REFINE_DISABLED=1` to turn it off. A failed batch
 leaves those columns blank and keeps the keyword results. Code: `triage/refine.py`.
 

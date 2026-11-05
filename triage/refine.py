@@ -1,8 +1,8 @@
-"""Optional second-pass review of flagged posts with the OpenAI API.
+"""Optional second-pass review of flagged posts with the Anthropic API.
 
-Enabled only when OPENAI_API_KEY is set (and REFINE_DISABLED is not "1").
+Enabled only when ANTHROPIC_API_KEY is set (and REFINE_DISABLED is not "1").
 The key is read from the environment and is never logged or printed.
-Model: OPENAI_MODEL (default gpt-4o-mini). Batch size: REFINE_BATCH_SIZE (default 20).
+Model: REFINE_MODEL (default claude-haiku-4-5). Batch size: REFINE_BATCH_SIZE (default 20).
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "claude-haiku-4-5"
 REFINE_COLUMNS = ["is_genuine", "refined_category", "narrative_summary", "theme", "severity"]
 VALID_CATEGORIES = {"threat", "protest", "both", "none"}
 VALID_SEVERITY = {"low", "medium", "high", "critical"}
@@ -35,23 +35,26 @@ CompleteFn = Callable[[str, str], str]
 
 
 def is_enabled() -> bool:
-    return bool(os.environ.get("OPENAI_API_KEY")) and os.environ.get("REFINE_DISABLED") != "1"
+    return bool(os.environ.get("ANTHROPIC_API_KEY")) and os.environ.get("REFINE_DISABLED") != "1"
 
 
-def _openai_complete() -> CompleteFn:
-    from openai import OpenAI  # imported lazily so the dependency is optional
+def _anthropic_complete() -> CompleteFn:
+    import anthropic  # imported lazily so the dependency is optional
 
-    client = OpenAI()  # reads OPENAI_API_KEY from the environment
-    model = os.environ.get("OPENAI_MODEL", DEFAULT_MODEL)
+    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
+    model = os.environ.get("REFINE_MODEL", DEFAULT_MODEL)
 
     def complete(system: str, user: str) -> str:
-        resp = client.chat.completions.create(
+        resp = client.messages.create(
             model=model,
-            response_format={"type": "json_object"},
+            max_tokens=4096,
             temperature=0,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            system=system + " Reply with the JSON object only, no other text.",
+            messages=[{"role": "user", "content": user}],
         )
-        return resp.choices[0].message.content or "{}"
+        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        start, end = text.find("{"), text.rfind("}")
+        return text[start:end + 1] if start != -1 else "{}"
 
     return complete
 
@@ -80,7 +83,7 @@ def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None =
     if complete is None:
         if not is_enabled():
             return flagged
-        complete = _openai_complete()
+        complete = _anthropic_complete()
     if flagged.empty:
         return flagged.assign(**{c: pd.Series(dtype=object) for c in REFINE_COLUMNS})
     batch_size = batch_size or int(os.environ.get("REFINE_BATCH_SIZE", "20"))
