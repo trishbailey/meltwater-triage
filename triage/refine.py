@@ -96,7 +96,6 @@ def anthropic_complete(max_tokens: int | None = None) -> CompleteFn:
         resp = client.messages.create(
             model=model,
             max_tokens=limit,
-            temperature=0,
             system=system + " Reply with the JSON object only, no other text.",
             messages=[{"role": "user", "content": user}],
         )

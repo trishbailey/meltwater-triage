@@ -383,3 +383,28 @@ def test_postgres_url_uses_psycopg_driver(monkeypatch):
     engine = create_engine(url)
     assert engine.dialect.driver == "psycopg"
     engine.dispose()
+
+
+def test_anthropic_call_uses_supported_args(monkeypatch):
+    """Regression: SDK 2.x rejects temperature; only pass supported arguments."""
+    import inspect
+    import anthropic
+    from anthropic.resources.messages import Messages
+    from triage.refine import anthropic_complete
+
+    allowed = set(inspect.signature(Messages.create).parameters)
+    seen = {}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            seen.update(kwargs)
+            block = type("B", (), {"type": "text", "text": '{"results": []}'})()
+            return type("R", (), {"content": [block], "stop_reason": "end_turn"})()
+
+    class FakeClient:
+        def __init__(self, **kw):
+            self.messages = FakeMessages()
+
+    monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
+    assert anthropic_complete()("sys", "{}") == '{"results": []}'
+    assert set(seen) <= allowed
