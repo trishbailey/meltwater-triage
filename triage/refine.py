@@ -2,7 +2,7 @@
 
 Enabled only when ANTHROPIC_API_KEY is set (and REFINE_DISABLED is not "1").
 The key is read from the environment and is never logged or printed.
-Model: REFINE_MODEL (default claude-haiku-4-5). Batch size: REFINE_BATCH_SIZE (default 20).
+Model: REFINE_MODEL (default claude-haiku-4-5). Batch size: REFINE_BATCH_SIZE (default 40).
 Output limit: ANTHROPIC_MAX_TOKENS (default 8192). Timeout: ANTHROPIC_TIMEOUT_SECONDS
 (default 120). ANTHROPIC_MAX_RETRIES defaults to 0 so one batch is one request.
 ANTHROPIC_MONTHLY_POST_CAP (see triage.budget) can skip this stage.
@@ -109,8 +109,8 @@ def anthropic_complete(max_tokens: int | None = None) -> CompleteFn:
 
 
 def concurrency() -> int:
-    """Parallel Claude requests per stage (ANTHROPIC_CONCURRENCY, default 4, max 8)."""
-    return _env_int("ANTHROPIC_CONCURRENCY", 4, 1, 8)
+    """Parallel Claude requests per stage (ANTHROPIC_CONCURRENCY, default 8, max 12)."""
+    return _env_int("ANTHROPIC_CONCURRENCY", 8, 1, 12)
 
 
 def run_concurrently(fn, jobs: list) -> list:
@@ -124,7 +124,7 @@ def run_concurrently(fn, jobs: list) -> list:
 
 def _post_payload(i: int, row: pd.Series, text_cols: list) -> dict:
     text = " ".join(str(row[c]) for c in text_cols if pd.notna(row[c]))
-    return {"id": i, "text": text[:2000],
+    return {"id": i, "text": text[:1200],
             "author": " ".join(str(row[c]) for c in row.index
                                if str(c).lower() in ("author name", "author handle") and pd.notna(row[c])), "keyword_category": row.get("category", ""),
             "matched_keywords": row.get("matched_keywords", "")}
@@ -217,7 +217,7 @@ def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None =
     if flagged.empty:
         return flagged.assign(**{c: pd.Series(dtype=object) for c in REFINE_COLUMNS})
     batch_size = _positive_int(
-        batch_size if batch_size is not None else os.environ.get("REFINE_BATCH_SIZE", "20"), 20)
+        batch_size if batch_size is not None else os.environ.get("REFINE_BATCH_SIZE", "40"), 40)
     out = flagged.reset_index(drop=True).copy()
     results: dict[int, dict] = {}
     ids = list(range(len(out)))

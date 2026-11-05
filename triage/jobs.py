@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .storage import normalize_database_url, persistence_enabled
 
 log = logging.getLogger(__name__)
-JOB_TTL_SECONDS = 3600
+JOB_TTL_SECONDS = int(os.environ.get("JOB_TTL_SECONDS", str(7 * 24 * 3600)))  # Excel downloads kept 7 days
 JOB_DIR = Path(os.environ.get("JOB_DIR", "/tmp/mt-jobs"))
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -219,6 +219,72 @@ def payload(jid: str) -> bytes | None:
     if p.exists():
         return p.read_bytes()
     return None
+
+
+def list_recent_downloads(limit: int = 10) -> list[dict]:
+    """Finished screen jobs that still have an Excel file on disk (or marked has_download)."""
+    out = []
+    if _use_db():
+        try:
+            with _eng().connect() as conn:
+                rows = conn.execute(
+                    select(jobs_table).where(jobs_table.c.kind == "screen", jobs_table.c.state == "done",
+                                             jobs_table.c.has_download == 1)
+                    .order_by(jobs_table.c.updated.desc()).limit(limit)).mappings().all()
+            for row in rows:
+                jid = row["id"]
+                if not (JOB_DIR / f"{jid}.bin").exists() and not _jobs.get(jid, {}).get("payload"):
+                    continue
+                out.append({"id": jid, "filenames": row["filenames"], "message": row["message"],
+                            "rows": row["rows"], "updated": row["updated"].isoformat() if row["updated"] else ""})
+        except Exception as exc:
+            log.warning("list_recent_downloads failed: %s", type(exc).__name__)
+    return out
+
+
+def list_running() -> list[dict]:
+    out = []
+    with _lock:
+        for jid, j in _jobs.items():
+            if j.get("state") == "running":
+                out.append({**j, "id": jid})
+    if _use_db():
+        try:
+            with _eng().connect() as conn:
+                rows = conn.execute(select(jobs_table).where(jobs_table.c.state == "running")).mappings().all()
+            for row in rows:
+                if not any(o.get("id") == row["id"] for o in out):
+                    d = dict(row)
+                    d["has_download"] = bool(d.get("has_download"))
+                    out.append(d)
+        except Exception as exc:
+            log.warning("list_running failed: %s", type(exc).__name__)
+    return out
+
+
+def mark_interrupted(jid: str, reason: str = "Interrupted by a deploy. Please upload again.") -> None:
+    with _lock:
+        if jid in _jobs:
+            _jobs[jid].update(state="error", error=reason, updated=time.time(), _ts=time.time())
+    _update_db(jid, {"state": "error", "error": reason})
+
+
+def reclaim_orphans_on_boot() -> int:
+    """Running rows left from a prior process cannot continue; mark them so the UI stops spinning."""
+    n = 0
+    if not _use_db():
+        return 0
+    try:
+        with _eng().connect() as conn:
+            rows = conn.execute(select(jobs_table.c.id).where(jobs_table.c.state == "running")).all()
+        for (jid,) in rows:
+            mark_interrupted(jid)
+            n += 1
+        if n:
+            log.warning("Marked %d orphaned upload job(s) interrupted after restart", n)
+    except Exception as exc:
+        log.warning("reclaim_orphans_on_boot failed: %s", type(exc).__name__)
+    return n
 
 
 def public(j: dict, jid: str | None = None) -> dict:

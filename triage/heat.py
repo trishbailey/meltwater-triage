@@ -62,7 +62,7 @@ def analyze_heat(df: pd.DataFrame, text_cols: list, complete=None, max_posts: in
         max_posts if max_posts is not None else os.environ.get("HEAT_MAX_POSTS", "300"), 300,
         positive=False)
     batch_size = _bounded_int(
-        batch_size if batch_size is not None else os.environ.get("HEAT_BATCH_SIZE", "25"), 25,
+        batch_size if batch_size is not None else os.environ.get("HEAT_BATCH_SIZE", "40"), 40,
         positive=True)
     out = df.reset_index(drop=True).copy()
     eng_col = next((c for c in out.columns if str(c).strip().lower() == "engagement"), None)
@@ -85,7 +85,7 @@ def analyze_heat(df: pd.DataFrame, text_cols: list, complete=None, max_posts: in
         chunk = chunk[:allowed]
         sent.extend(chunk)
         payload = [{"id": int(i), "text": " ".join(str(out.at[i, c]) for c in text_cols
-                                                   if pd.notna(out.at[i, c]))[:1500]} for i in chunk]
+                                                   if pd.notna(out.at[i, c]))[:1000]} for i in chunk]
         jobs.append((start, len(chunk), json.dumps({"posts": payload})))
 
     def _run(job):

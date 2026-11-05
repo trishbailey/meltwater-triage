@@ -53,14 +53,15 @@ def test_dashboard_includes_map(client):
     assert 'id="dash-map"' in html and "World_Dark_Gray_Base" in html
     assert "leaflet" in html.lower() and "OpenStreetMap" in html
     data = client.get("/api/map?days=30").get_json()
-    assert len(data["assets"]) == 16
+    assert len(data["assets"]) == 16 and "threats" in data
 
 
 def test_web_source_color_distinct():
     coloraide = pytest.importorskip("coloraide")
     from triage import dashboard as dash
     web = dash.SOURCE_COLORS["web"]
-    others = [c for k, c in dash.SOURCE_COLORS.items() if k != "web"] + list(dash.COLORS.values())
+    from triage import geo
+    others = [c for k, c in dash.SOURCE_COLORS.items() if k != "web"] + list(dash.COLORS.values()) + [geo.ASSET_COLOR]
     for o in others:
         assert coloraide.Color(web).delta_e(o, method="2000") >= 20, o
 

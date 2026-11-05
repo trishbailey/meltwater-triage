@@ -111,9 +111,11 @@ CITY_CENTROIDS = {
 }
 
 # Asset markers (cyan) vs event markers (amber) — CIEDE2000 well above 20 on dark UI.
-ASSET_COLOR = "#3dd6f5"
+ASSET_COLOR = "#ffffff"
 EVENT_COLOR = "#ff8a1f"
 EVENT_ALERT_COLOR = "#ff4fd8"
+UPCOMING_COLOR = "#6b8cff"
+THREAT_MAP_COLOR = "#c92f24"
 
 
 def _eng():

@@ -72,6 +72,14 @@ label{display:block;font-size:14px;margin:0 0 6px}
 .leaflet-popup-content{margin:10px 12px;font-size:13px}
 .leaflet-control-attribution{font-size:11px;background:rgba(11,21,38,.85)!important;color:var(--muted)!important}
 .leaflet-control-attribution a{color:#7cc4ff}
+
+.map-asset{background:transparent!important;border:none!important}
+.map-label{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:rgba(11,21,38,.88);border:1px solid #24365a;color:#e6e9ef;font-size:13px;line-height:1.2;white-space:nowrap;max-width:140px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
+.map-threat-wrap{background:transparent!important;border:none!important}
+.map-threat{display:block;width:12px;height:12px;transform:rotate(45deg);border:2px solid;box-shadow:0 0 0 1px #0b1526}
+.map-filters .btn[aria-pressed=false]{opacity:.55}
+.upload-status{margin-top:8px}
+
 @media (max-width:720px){.dash-map{height:320px}}
 
 .narrow{max-width:420px;margin:8vh auto 0}
@@ -92,11 +100,15 @@ input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
 <input id="files" type="file" name="files" accept=".xlsx,.csv" multiple required>
 <p style="margin-top:10px"><button class="btn primary" type="submit">Screen posts</button></p></form>
 </div>
-<div class="card">
-<h3>Seerist report</h3>
-<p>Upload a Seerist PDF export. Items are added to early-warning alerts on the dashboard.</p>
-<p><a class="btn" href="/seerist">Open Seerist upload</a></p>
+{% if recent_downloads %}
+<div class="card" id="recent-downloads">
+<h3>Recent Excel exports</h3>
+<p>Downloads from finished uploads (kept for 7 days).</p>
+<ul class="dl-list">{% for d in recent_downloads %}
+<li><a href="/jobs/{{ d.id }}/download">{{ d.filenames or "Flagged posts" }}</a></li>
+{% endfor %}</ul>
 </div>
+{% endif %}
 <p><a href="/status">Usage and storage status</a></p>
 </aside>
 <div class="main">
