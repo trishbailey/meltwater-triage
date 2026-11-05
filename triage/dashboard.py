@@ -72,10 +72,18 @@ def _text(row, cols) -> str:
 
 
 def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
-          meltwater_seen: dict | None = None, month: str | None = None) -> dict:
+          meltwater_seen: dict | None = None, month: str | None = None,
+          map_days: int | None = 30) -> dict:
     ctx: dict = {"colors": COLORS, "source_colors": SOURCE_COLORS, "source_labels": SOURCE_LABELS,
                  "signal_colors": SIGNAL_COLORS, "has_data": not posts.empty}
     ctx["alerts"] = build_alerts(alerts, meltwater_seen or {})
+    from . import geo
+    ctx["map"] = {"assets": geo.asset_markers(), "days": map_days,
+                 "colors": {"asset": geo.ASSET_COLOR, "event": geo.EVENT_COLOR,
+                            "alert": geo.EVENT_ALERT_COLOR},
+                 "legend": [{"label": "Defense and civic sites", "color": geo.ASSET_COLOR},
+                            {"label": "Protest (Meltwater)", "color": geo.EVENT_COLOR},
+                            {"label": "Early-warning alert", "color": geo.EVENT_ALERT_COLOR}]}
     if posts.empty:
         return ctx
     df = posts.copy()
