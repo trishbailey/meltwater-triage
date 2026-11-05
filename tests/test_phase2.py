@@ -1,0 +1,147 @@
+import json
+from datetime import datetime, timezone
+
+import pandas as pd
+
+from triage.aggregate import heat_by_topic, recurring_threat_posters
+from triage.filters import Patterns, screen_text
+from triage.heat import analyze_heat
+from triage.pipeline import process, to_workbook
+from triage.refine import refine
+from triage.storage import Storage
+
+P = Patterns()
+
+
+# --- noisy terms ---------------------------------------------------------
+def test_mp_uppercase_only():
+    assert screen_text("We will kill the MP", P)["category"] == "threat"
+    assert screen_text("We will kill the mp3 player", P)["category"] == ""
+    assert screen_text("kill it, mp", P)["category"] == ""
+
+
+def test_weak_threat_terms_need_nearby_target():
+    far = "Attack on the bowling team was brutal " + "word " * 20 + "and AUKUS is in the news."
+    assert screen_text(far, P)["category"] == ""
+    assert screen_text("They will attack HMAS Stirling", P)["category"] == "threat"
+    assert screen_text("Hang the defence minister", P)["category"] == "threat"
+    # strong terms still only need a target anywhere
+    assert screen_text("I will bomb it. " + "word " * 20 + "AUKUS", P)["category"] == "threat"
+
+
+def test_weak_protest_terms_need_other_signal():
+    assert screen_text("Register for the training demo outside the office", P)["category"] == ""
+    r = screen_text("Join us outside Parliament House, register now #NoAUKUS", P)
+    assert r["category"] == "protest"
+    assert "protest:register" in r["matched_keywords"]
+
+
+# --- refine protest fields ----------------------------------------------
+def test_refine_protest_fields():
+    flagged = pd.DataFrame({"Hit Sentence": ["Rally at Garden Island"], "category": ["protest"],
+                            "matched_keywords": ["protest:rally"], "Author Handle": ["@x"]})
+    seen = {}
+
+    def fake(system, user):
+        seen["payload"] = json.loads(user)["posts"][0]
+        return json.dumps({"results": [{"id": 0, "is_genuine": True, "refined_category": "protest",
+            "protest_location": "Garden Island, WA", "protest_topic": "nuclear submarines",
+            "organizers_or_groups": ["Stop AUKUS WA"], "event_date": "Saturday 9 Nov",
+            "scale_or_turnout": "about 200"}]})
+
+    out = refine(flagged, ["Hit Sentence"], complete=fake)
+    assert out.loc[0, "protest_location"] == "Garden Island, WA"
+    assert out.loc[0, "organizers_or_groups"] == "Stop AUKUS WA"
+    assert out.loc[0, "scale_or_turnout"] == "about 200"
+    assert seen["payload"]["author"] == "@x"
+
+
+# --- recurring posters --------------------------------------------------
+def test_recurring_threat_posters():
+    df = pd.DataFrame({
+        "Date": ["2026-10-01", "2026-10-20", "2026-10-05", "2026-10-07", "2026-10-09"],
+        "Author Handle": ["@a", "@A", "@b", "@c", "@c"],
+        "Author Name": ["Ann", "Ann", "Bob", "Cy", "Cy"],
+        "Engagement": [10, 5, 99, 1, 2],
+        "category": ["threat", "both", "threat", "protest", "protest"],
+    })
+    out = recurring_threat_posters(df)
+    assert list(out["author_handle"]) == ["@a"]
+    assert out.loc[0, "threat_posts"] == 2 and out.loc[0, "total_engagement"] == 15
+    assert str(out.loc[0, "first_seen"].date()) == "2026-10-01"
+    assert str(out.loc[0, "last_seen"].date()) == "2026-10-20"
+
+
+# --- heat ---------------------------------------------------------------
+def _heat_fake(calls):
+    def fake(system, user):
+        posts = json.loads(user)["posts"]
+        calls.append(len(posts))
+        return json.dumps({"results": [{"id": p["id"], "heat_score": p["id"] % 11,
+                                        "topic": "Costs" if p["id"] % 2 else "sovereignty",
+                                        "heated_phrases": ["x"]} for p in posts]})
+    return fake
+
+
+def test_heat_cap_and_batches(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    df = pd.DataFrame({"Hit Sentence": [f"post {i}" for i in range(50)], "Engagement": range(50)})
+    assert "heat_score" not in analyze_heat(df, ["Hit Sentence"]).columns  # skipped w/o key
+    calls = []
+    out = analyze_heat(df, ["Hit Sentence"], complete=_heat_fake(calls), max_posts=12, batch_size=5)
+    assert calls == [5, 5, 2]
+    assert out["heat_sampled"].sum() == 12 and out["heat_score"].notna().sum() == 12
+    topics = heat_by_topic(out)
+    assert set(topics["topic"]) <= {"costs", "sovereignty"}
+    assert topics["avg_heat"].is_monotonic_decreasing
+    assert {"total_heat", "total_engagement"} <= set(topics.columns)
+
+
+def test_heat_score_clamped():
+    df = pd.DataFrame({"Hit Sentence": ["a"]})
+    out = analyze_heat(df, ["Hit Sentence"], complete=lambda s, u: json.dumps(
+        {"results": [{"id": 0, "heat_score": 42, "topic": "T", "heated_phrases": "boo"}]}))
+    assert out.loc[0, "heat_score"] == 10 and out.loc[0, "heated_phrases"] == "boo"
+
+
+# --- storage ------------------------------------------------------------
+def _flagged(ids, cat="threat"):
+    return pd.DataFrame({"Document ID": ids, "Date": ["2026-10-01"] * len(ids),
+                         "Author Handle": ["@a"] * len(ids), "Engagement": [5] * len(ids),
+                         "category": [cat] * len(ids), "link": ["https://e.x"] * len(ids)})
+
+
+def test_storage_dedupe_and_monthly(tmp_path):
+    st = Storage(f"sqlite:///{tmp_path/'t.db'}")
+    st.save_run(_flagged(['"d1"', "d2"]), ["oct.xlsx"], 10, now=datetime(2026, 10, 28, tzinfo=timezone.utc))
+    st.save_run(_flagged(["d2", "d3"], "protest"), ["nov.xlsx"], 8, now=datetime(2026, 11, 4, tzinfo=timezone.utc))
+    posts = st.load_posts()
+    assert len(posts) == 3  # d2 deduped (quotes stripped from d1 too)
+    d2 = posts[posts["Document ID"] == "d2"].iloc[0]
+    assert d2["upload_month"] == "2026-10" and d2["category"] == "protest"
+    m = st.monthly_counts()
+    assert m.to_dict("records") == [
+        {"month": "2026-10", "category": "protest", "posts": 1, "engagement": 5.0},
+        {"month": "2026-10", "category": "threat", "posts": 1, "engagement": 5.0},
+        {"month": "2026-11", "category": "protest", "posts": 1, "engagement": 5.0},
+    ]
+    assert set(st.load_posts("2026-11")["Document ID"]) == {"d3"}
+
+
+def test_pipeline_end_to_end(tmp_path, monkeypatch):
+    import io
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    df = pd.DataFrame({"Document ID": ["1", "2", "3"], "Author Handle": ["@a", "@a", "@b"],
+                       "Engagement": ["1,000", "2", "3"], "Hit Sentence": [
+                           "We will bomb the AUKUS shipyard", "Kill the MP", "Lovely day"]})
+    buf = io.BytesIO(); df.to_excel(buf, index=False)
+    st = Storage(f"sqlite:///{tmp_path/'p.db'}")
+    calls = []
+    res = process([("w.xlsx", buf.getvalue())], refine_fn=lambda s, u: '{"results": []}',
+                  heat_fn=_heat_fake(calls), storage=st)
+    assert len(res.flagged) == 2 and res.run_id == 1
+    assert res.posters.loc[0, "author_handle"] == "@a" and res.posters.loc[0, "total_engagement"] == 1002
+    assert res.all_posts["heat_sampled"].all()  # heat covers all posts, not just hits
+    sheets = pd.ExcelFile(io.BytesIO(to_workbook(res))).sheet_names
+    assert sheets == ["Flagged", "Recurring threat posters", "Heat by topic", "Heat (all posts)"]
+    assert len(st.load_posts()) == 2

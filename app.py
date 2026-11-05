@@ -13,7 +13,7 @@ from functools import wraps
 from flask import Flask, Response, render_template, request, send_file
 import io
 
-from triage.filters import combine_uploads, flag_posts, to_excel_bytes
+from triage.pipeline import process, to_workbook
 
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "50"))
 
@@ -53,11 +53,11 @@ def create_app() -> Flask:
         if not files:
             return render_template("index.html", error="Please choose at least one file."), 400
         try:
-            flagged = flag_posts(combine_uploads(files))
+            result = process(files)
         except ValueError as exc:
             return render_template("index.html", error=str(exc)), 400
         name = f"flagged_posts_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.xlsx"
-        return send_file(io.BytesIO(to_excel_bytes(flagged)), as_attachment=True, download_name=name,
+        return send_file(io.BytesIO(to_workbook(result)), as_attachment=True, download_name=name,
                          mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     return app

@@ -29,6 +29,35 @@ the stage is skipped. Settings: `REFINE_MODEL` (default `claude-haiku-4-5`),
 `REFINE_BATCH_SIZE` (default 20), `REFINE_DISABLED=1` to turn it off. A failed batch
 leaves those columns blank and keeps the keyword results. Code: `triage/refine.py`.
 
+Protest fields from the review: `protest_location`, `protest_topic`, `organizers_or_groups`,
+`event_date`, `scale_or_turnout`.
+
+### Noisy terms (in `triage/keywords.py`)
+- `CASE_SENSITIVE_TARGET_TERMS`: "MP" matches only as an uppercase whole word.
+- `CONTEXT_REQUIRED_THREAT_TERMS` ("hang", "attack", "destroy") count only when a target
+  term is within `THREAT_PROXIMITY_WORDS` (8) words.
+- `WEAK_PROTEST_TERMS` ("demo", "register", "training", "outside") count only alongside
+  another protest signal.
+
+## Heated-language analysis
+Covers all screened posts, not just keyword hits. Each scored post gets `heat_score` (0-10),
+`heat_topic`, `heated_phrases`, `heat_sampled`. Cost is capped by `HEAT_MAX_POSTS`
+(default 300; a reproducible random sample is scored above that) and batched by
+`HEAT_BATCH_SIZE` (default 25). `HEAT_DISABLED=1` turns it off; it is skipped without
+`ANTHROPIC_API_KEY`.
+
+## Output workbook
+Sheets: `Flagged`, `Recurring threat posters` (handle, name, threat post count, total
+engagement, first/last seen; 2+ threat posts), and, when heat ran, `Heat by topic` (ranked
+by average then total heat, with engagement) and `Heat (all posts)`.
+
+## Storage
+`triage/storage.py` (SQLAlchemy) stores each upload run and its flagged posts, deduped by
+Document ID, with upload week and month for month-over-month comparisons. Enabled when
+`DATABASE_URL` is set (Postgres) or `PERSIST_RUNS=1` (local SQLite at
+`STORAGE_SQLITE_PATH`, default `data/triage.db`). Render's free filesystem is temporary,
+so lasting storage needs a Render Postgres database.
+
 ## Run locally
 ```
 pip install -r requirements.txt -r requirements-dev.txt

@@ -10,12 +10,13 @@ import pandas as pd
 from . import keywords as kw
 
 
-def make_pattern(terms: Iterable[str]):
+def make_pattern(terms: Iterable[str], case_sensitive: bool = False):
     terms = [t.strip() for t in terms if isinstance(t, str) and t.strip()]
     if not terms:
         return None
     alternatives = "|".join(sorted((re.escape(t) for t in terms), key=len, reverse=True))
-    return re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)", flags=re.IGNORECASE)
+    flags = 0 if case_sensitive else re.IGNORECASE
+    return re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)", flags=flags)
 
 
 def matched_terms(text: str, pattern) -> list[str]:
@@ -48,6 +49,10 @@ class Patterns:
     def __init__(self, k=kw):
         self.threat = make_pattern(k.THREAT_TERMS)
         self.target = make_pattern(k.AUKUS_TARGET_TERMS + k.PERSON_ROLE_TERMS + k.PERSON_NAMES)
+        self.target_cs = make_pattern(k.CASE_SENSITIVE_TARGET_TERMS, case_sensitive=True)
+        self.weak_threat = {t.lower() for t in k.CONTEXT_REQUIRED_THREAT_TERMS}
+        self.proximity = k.THREAT_PROXIMITY_WORDS
+        self.weak_protest = {t.lower() for t in k.WEAK_PROTEST_TERMS}
         self.action = make_pattern(k.ACTION_NOUNS)
         self.cta = make_pattern(k.CALL_TO_ACTION)
         self.disruption = make_pattern(k.DISRUPTION_TERMS)
@@ -71,21 +76,67 @@ PROTEST_FLAG_STATUSES = {
 }
 
 
+_WORD = re.compile(r"\w+")
+
+
+def _word_index(text: str, pos: int) -> int:
+    return len(_WORD.findall(text[:pos]))
+
+
+def _threat_terms_in_context(text: str, p: Patterns, target_positions: list[int]) -> list[str]:
+    """Threat terms; weak ones only count when a target is within p.proximity words."""
+    if p.threat is None or not target_positions:
+        return []
+    target_words = [_word_index(text, pos) for pos in target_positions]
+    found = set()
+    for mt in p.threat.finditer(text):
+        term = mt.group(0)
+        if term.lower() in p.weak_threat:
+            w = _word_index(text, mt.start())
+            if not any(abs(w - tw) <= p.proximity for tw in target_words):
+                continue
+        found.add(term)
+    return sorted(found, key=str.lower)
+
+
+STRONG_PROTEST_GROUPS = ("action", "cta", "disruption", "organizer", "hashtag")
+
+
+def _drop_weak_protest_terms(m: dict, weak: set) -> None:
+    """Remove weak protest terms unless another protest signal is present."""
+    strong = any(t.lower() not in weak for g in STRONG_PROTEST_GROUPS for t in m[g])
+    if strong:
+        return
+    for g in m:
+        m[g] = [t for t in m[g] if t.lower() not in weak]
+
+
+def _place_match(text: str, weak: set, has_strong_signal: bool) -> bool:
+    mt = PLACE_PATTERN.search(text)
+    if not mt:
+        return False
+    first = mt.group(0).split()[0].lower()
+    return has_strong_signal or first not in weak
+
+
 def screen_text(text: str, p: Patterns) -> dict:
     """Return threat/protest matches and mobilization status for one post."""
-    threat_terms = matched_terms(text, p.threat)
-    target_terms = matched_terms(text, p.target)
+    target_spans = [(mt.start(), mt.group(0)) for pat in (p.target, p.target_cs) if pat
+                    for mt in pat.finditer(text)]
+    target_terms = sorted({t for _, t in target_spans}, key=str.lower)
+    threat_terms = _threat_terms_in_context(text, p, [pos for pos, _ in target_spans])
     is_threat = bool(threat_terms and target_terms)
 
     m = {name: matched_terms(text, getattr(p, name)) for name in (
         "action", "cta", "disruption", "organizer", "logistics", "hashtag",
         "inquiry", "past", "future", "union", "defense")}
+    _drop_weak_protest_terms(m, p.weak_protest)
     dates = DATE_PATTERN.findall(text)
     times = TIME_PATTERN.findall(text)
     addresses = ADDRESS_PATTERN.findall(text)
 
     action_or_cta = bool(m["action"] or m["cta"] or m["disruption"])
-    has_place = bool(m["logistics"] or addresses or PLACE_PATTERN.search(text))
+    has_place = bool(m["logistics"] or addresses or _place_match(text, p.weak_protest, action_or_cta))
     has_dtp = bool(dates or times or has_place)
     past_only = bool(m["past"] and not m["future"])
 

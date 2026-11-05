@@ -19,6 +19,7 @@ DEFAULT_MODEL = "claude-haiku-4-5"
 REFINE_COLUMNS = [
     "is_genuine", "refined_category", "narrative_summary", "theme", "severity",
     "threat_type", "targets", "named_individuals",
+    "protest_location", "protest_topic", "organizers_or_groups", "event_date", "scale_or_turnout",
 ]
 THREAT_TYPES = {
     "violence", "death threat", "bombing or arson", "sabotage", "doxxing", "harassment",
@@ -38,7 +39,11 @@ SYSTEM_PROMPT = (
     "\"death threat\"|\"bombing or arson\"|\"sabotage\"|\"doxxing\"|\"harassment\"|"
     "\"call to protest\"|\"call to disruption\"|\"other\"|\"none\", \"targets\": [strings: "
     "people, groups, places, or institutions the post targets or mentions as targets], "
-    "\"named_individuals\": [strings: named politicians and other named people]}]}. "
+    "\"named_individuals\": [strings: named politicians and other named people], "
+    "\"protest_location\": string (city, region, or site; empty if none), \"protest_topic\": "
+    "string (2-6 words; empty if not a protest), \"organizers_or_groups\": [strings: who is "
+    "behind the protest], \"event_date\": string (only if stated, else empty), "
+    "\"scale_or_turnout\": string (only if stated, else empty)}]}. "
     "One result per input id. Use American spelling."
 )
 
@@ -50,7 +55,7 @@ def is_enabled() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY")) and os.environ.get("REFINE_DISABLED") != "1"
 
 
-def _anthropic_complete() -> CompleteFn:
+def anthropic_complete(max_tokens: int = 4096) -> CompleteFn:
     import anthropic  # imported lazily so the dependency is optional
 
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
@@ -59,7 +64,7 @@ def _anthropic_complete() -> CompleteFn:
     def complete(system: str, user: str) -> str:
         resp = client.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             temperature=0,
             system=system + " Reply with the JSON object only, no other text.",
             messages=[{"role": "user", "content": user}],
@@ -73,7 +78,9 @@ def _anthropic_complete() -> CompleteFn:
 
 def _post_payload(i: int, row: pd.Series, text_cols: list) -> dict:
     text = " ".join(str(row[c]) for c in text_cols if pd.notna(row[c]))
-    return {"id": i, "text": text[:2000], "keyword_category": row.get("category", ""),
+    return {"id": i, "text": text[:2000],
+            "author": " ".join(str(row[c]) for c in row.index
+                               if str(c).lower() in ("author name", "author handle") and pd.notna(row[c])), "keyword_category": row.get("category", ""),
             "matched_keywords": row.get("matched_keywords", "")}
 
 
@@ -90,7 +97,16 @@ def _clean(item: dict) -> dict:
         "threat_type": tt if tt in THREAT_TYPES else ("other" if tt else ""),
         "targets": _join_list(item.get("targets")),
         "named_individuals": _join_list(item.get("named_individuals")),
+        "protest_location": _text(item.get("protest_location"), 200),
+        "protest_topic": _text(item.get("protest_topic"), 100),
+        "organizers_or_groups": _join_list(item.get("organizers_or_groups")),
+        "event_date": _text(item.get("event_date"), 100),
+        "scale_or_turnout": _text(item.get("scale_or_turnout"), 100),
     }
+
+
+def _text(value, limit: int) -> str:
+    return "" if value is None else str(value).strip()[:limit]
 
 
 def _join_list(value) -> str:
@@ -113,7 +129,7 @@ def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None =
     if complete is None:
         if not is_enabled():
             return flagged
-        complete = _anthropic_complete()
+        complete = anthropic_complete()
     if flagged.empty:
         return flagged.assign(**{c: pd.Series(dtype=object) for c in REFINE_COLUMNS})
     batch_size = batch_size or int(os.environ.get("REFINE_BATCH_SIZE", "20"))

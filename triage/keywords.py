@@ -112,7 +112,6 @@ PERSON_ROLE_TERMS = [
     "senator",
     "senators",
     "member of parliament",
-    "MP",
 ]
 
 ACTION_NOUNS = [
@@ -296,4 +295,27 @@ NUMERIC_COLUMNS = [
     "reactions", "views", "estimated views", "reach", "global reach",
     "national reach", "local reach", "episode reach", "social echo",
     "editorial echo", "ave", "emv",
+]
+
+# Matched case-sensitively as whole words (e.g. "MP" but not "mp" or "Mp").
+CASE_SENSITIVE_TARGET_TERMS = [
+    "MP",
+]
+
+# Weak threat terms: count only when a target term appears within
+# THREAT_PROXIMITY_WORDS words of the term (other threat terms just need a target anywhere).
+CONTEXT_REQUIRED_THREAT_TERMS = [
+    "hang",
+    "attack",
+    "destroy",
+]
+THREAT_PROXIMITY_WORDS = 8
+
+# Weak protest terms: count only when the post has at least one other protest
+# signal (action, call to action, disruption, organizer, or hashtag match).
+WEAK_PROTEST_TERMS = [
+    "demo",
+    "register",
+    "training",
+    "outside",
 ]

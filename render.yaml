@@ -12,3 +12,6 @@ services:
         sync: false
       - key: REFINE_MODEL
         value: claude-haiku-4-5
+      - key: HEAT_MAX_POSTS
+        value: "300"
+      # Add DATABASE_URL from a Render Postgres instance to keep month-to-month history.
