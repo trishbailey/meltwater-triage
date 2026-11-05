@@ -31,7 +31,6 @@ xhr.upload.onprogress=function(ev){if(ev.lengthComputable){var p=100*ev.loaded/e
 xhr.upload.onload=function(){set(100,"Processing…","Waiting for the server",true);};
 xhr.onload=function(){var j={};try{j=JSON.parse(xhr.responseText);}catch(_){}
 if(xhr.status===202&&j.job){set(0,"Processing…","",true);poll(j.job);}
-else if(xhr.status===401||xhr.responseURL.indexOf("/login")>-1){fail("Your session ended. Sign in again.");}
 else{fail(j.error||"Upload failed. Please try again.");}};
 xhr.onerror=function(){fail("Upload failed. Check your connection and try again.");};
 xhr.send(new FormData(form));});

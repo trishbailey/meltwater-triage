@@ -1,6 +1,6 @@
 """Flask app: upload Meltwater exports, download flagged posts as Excel.
 
-Pages use the session login in `require_password`.
+Pages are public; only POST /api/alerts needs a bearer token.
 """
 from __future__ import annotations
 
@@ -66,17 +66,9 @@ def _auth_configured() -> str | None:
 
 
 def require_password(view):
-    """Signed session cookie set by /login; signed-out page requests go to /login."""
-    @wraps(view)
-    def wrapper(*args, **kwargs):
-        problem = _auth_configured()
-        if problem:
-            return Response(problem, 503)
-        if not session.get("auth"):
-            nxt = request.full_path if request.method == "GET" else "/"
-            return redirect(url_for("login", next=nxt.rstrip("?")))
-        return view(*args, **kwargs)
-    return wrapper
+    """Pages are public by the owner's choice (the data is public). Kept as a no-op so the
+    gate can be restored in one place. /api/alerts keeps its bearer token."""
+    return view
 
 
 def _safe_next(target: str | None) -> str:
@@ -117,39 +109,11 @@ def create_app() -> Flask:
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
-        problem = _auth_configured()
-        if problem:
-            return Response(problem, 503)
-        nxt = _safe_next(request.values.get("next"))
-        if request.method == "GET":
-            if session.get("auth"):
-                return redirect(nxt)
-            return render_template("login.html", error=None, next=nxt)
-        if not _same_origin_upload():
-            return render_template("login.html", error="Sign-in blocked: use the form on this site.", next=nxt), 403
-        key, now = _client_key(), time.monotonic()
-        with _failures_lock:
-            if len(_recent_failures(key, now)) >= LOGIN_MAX_FAILURES:
-                return render_template("login.html", next=nxt,
-                                       error="Too many failed attempts. Wait 15 minutes and try again."), 429
-        if _password_ok(request.form.get("password", ""), os.environ["APP_PASSWORD"]):
-            with _failures_lock:
-                _failures.pop(key, None)
-            session.clear()
-            session.permanent = True
-            session["auth"] = True
-            return redirect(nxt)
-        with _failures_lock:
-            _recent_failures(key, now).append(now)
-        app.logger.warning("Failed sign-in attempt")
-        return render_template("login.html", error="Incorrect password.", next=nxt), 401
+        return redirect(_safe_next(request.values.get("next")))
 
-    @app.post("/logout")
-    def logout():
-        if not _same_origin_upload():
-            return Response("Blocked.", 403)
-        session.clear()
-        return redirect(url_for("login"))
+    @app.get("/robots.txt")
+    def robots():
+        return Response("User-agent: *\nDisallow: /\n", mimetype="text/plain")
 
     @app.get("/healthz")
     def healthz():
