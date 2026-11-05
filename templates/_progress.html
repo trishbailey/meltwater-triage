@@ -1,38 +1,62 @@
-<div class="progress" id="progress" hidden aria-live="polite">
-<p class="pstage" id="pstage">Uploading…</p>
-<div class="ptrack" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="pstage" id="pbar"><div class="pfill" id="pfill"></div></div>
-<p class="note" id="pcount"></p></div>
-<p class="okmsg" id="presult" role="status" hidden></p>
-<p class="err" id="perror" role="alert" hidden></p>
 <script>
 (function(){
-var form=document.getElementById("upform");if(!form||!window.XMLHttpRequest||!window.FormData)return;
-var box=document.getElementById("progress"),stage=document.getElementById("pstage"),bar=document.getElementById("pbar"),
-fill=document.getElementById("pfill"),count=document.getElementById("pcount"),okEl=document.getElementById("presult"),
-errEl=document.getElementById("perror"),btn=form.querySelector("button[type=submit]");
-function set(pct,label,detail,busy){pct=Math.max(0,Math.min(100,pct));fill.style.width=pct+"%";bar.setAttribute("aria-valuenow",Math.round(pct));
-fill.classList.toggle("busy",!!busy);stage.textContent=label;count.textContent=detail||"";}
-function finish(){btn.disabled=false;btn.textContent=btn.dataset.label;}
-function fail(msg){box.hidden=true;errEl.textContent=msg;errEl.hidden=false;finish();}
-function poll(id){fetch("/jobs/"+id,{credentials:"same-origin"}).then(function(r){return r.json().then(function(j){return [r.ok,j];});}).then(function(x){
-var ok=x[0],j=x[1];if(!ok){fail(j.error||"Lost track of the upload.");return;}
-if(j.state==="running"){var pct=j.total?100*j.done/j.total:0;
-set(j.total?pct:100,j.stage+"…",j.total?(j.done+" of "+j.total+" "+(form.dataset.unit||"posts")+" processed"):"Working…",!j.total);
-setTimeout(function(){poll(id);},1000);return;}
-if(j.state==="error"){fail(j.error);return;}
-set(100,"Done","",false);box.hidden=true;okEl.textContent=j.message+" ("+j.elapsed+" s)";okEl.hidden=false;finish();
-if(j.has_download){window.location="/jobs/"+id+"/download";}
-}).catch(function(){setTimeout(function(){poll(id);},3000);});}
-form.addEventListener("submit",function(e){e.preventDefault();okEl.hidden=true;errEl.hidden=true;
-btn.dataset.label=btn.dataset.label||btn.textContent;btn.disabled=true;btn.textContent="Processing…";
-box.hidden=false;set(0,"Uploading…","0%",false);
-var xhr=new XMLHttpRequest();xhr.open("POST",form.action);xhr.setRequestHeader("X-Upload-Mode","job");
-xhr.upload.onprogress=function(ev){if(ev.lengthComputable){var p=100*ev.loaded/ev.total;set(p,"Uploading…",Math.round(p)+"% uploaded",false);}};
-xhr.upload.onload=function(){set(100,"Processing…","Waiting for the server",true);};
-xhr.onload=function(){var j={};try{j=JSON.parse(xhr.responseText);}catch(_){}
-if(xhr.status===202&&j.job){set(0,"Processing…","",true);poll(j.job);}
-else{fail(j.error||"Upload failed. Please try again.");}};
-xhr.onerror=function(){fail("Upload failed. Check your connection and try again.");};
-xhr.send(new FormData(form));});
+if(!window.XMLHttpRequest||!window.FormData)return;
+function ensureUi(form){
+  var box=form.parentNode.querySelector(".progress");
+  if(box)return box.parentNode; // return wrapper? we'll create siblings after form
+  var wrap=document.createElement("div");
+  wrap.innerHTML='<div class="progress" hidden aria-live="polite"><p class="okmsg paccept" hidden></p><p class="pstage">Uploading…</p><div class="ptrack" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="pfill"></div></div><p class="note pcount"></p></div><p class="okmsg presult" role="status" hidden></p><p class="err perror" role="alert" hidden></p>';
+  form.parentNode.insertBefore(wrap, form.nextSibling);
+  return wrap;
+}
+function bind(form){
+  if(form.dataset.boundProgress)return; form.dataset.boundProgress="1";
+  var wrap=ensureUi(form);
+  var box=wrap.querySelector(".progress"), stage=wrap.querySelector(".pstage"), bar=wrap.querySelector(".ptrack"),
+  fill=wrap.querySelector(".pfill"), count=wrap.querySelector(".pcount"), okEl=wrap.querySelector(".presult"),
+  errEl=wrap.querySelector(".perror"), accept=wrap.querySelector(".paccept"),
+  btn=form.querySelector("button[type=submit]"), key="mtJob:"+(form.getAttribute("action")||"");
+  function set(pct,label,detail,busy){pct=Math.max(0,Math.min(100,pct|0));fill.style.width=pct+"%";bar.setAttribute("aria-valuenow",Math.round(pct));
+  fill.classList.toggle("busy",!!busy);stage.textContent=label;count.textContent=detail||"";}
+  function finish(){btn.disabled=false;btn.textContent=btn.dataset.label;try{sessionStorage.removeItem(key);}catch(e){}}
+  function fail(msg){box.hidden=false;errEl.textContent=msg;errEl.hidden=false;finish();}
+  function accepted(j){var names=j.filenames||"";var rows=j.rows||0;var t="File accepted";
+  if(names)t+=": "+names;if(rows)t+=" ("+Number(rows).toLocaleString()+" rows)";accept.textContent=t;accept.hidden=false;}
+  function downloadBlob(id){return fetch("/jobs/"+id+"/download",{credentials:"same-origin"}).then(function(r){
+  if(!r.ok)throw new Error("Download failed");
+  var cd=r.headers.get("Content-Disposition")||"";var m=/filename=\"?([^\";]+)\"?/.exec(cd);
+  var name=m?m[1]:"flagged_posts.xlsx";return r.blob().then(function(b){return {blob:b,name:name};});
+  }).then(function(x){var a=document.createElement("a");a.href=URL.createObjectURL(x.blob);a.download=x.name;
+  document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},2000);});}
+  function showRunning(j){box.hidden=false;errEl.hidden=true;
+  var unit=form.dataset.unit||"posts";var detail=j.total?(j.done+" of "+j.total+" "+unit):(j.stage&&j.stage.indexOf("File accepted")===0?"Starting…":"Working…");
+  var pct=j.total?Math.round(100*j.done/j.total):(j.stage==="File accepted"?5:15);
+  set(pct,j.stage||"Working",detail,!j.total);}
+  function poll(id){fetch("/jobs/"+id,{credentials:"same-origin"}).then(function(r){return r.json().then(function(j){return [r.ok,j];});}).then(function(x){
+  var ok=x[0],j=x[1];if(!ok){fail(j.error||"Lost track of the upload. Please try again.");return;}
+  if(j.filenames||j.rows)accepted(j);
+  if(j.state==="running"){showRunning(j);setTimeout(function(){poll(id);},1000);return;}
+  if(j.state==="error"){fail(j.error||"Upload failed.");return;}
+  set(100,"Done","",false);okEl.textContent=j.message||"Done.";okEl.hidden=false;finish();
+  if(j.has_download){okEl.textContent=(j.message||"Done.")+" Downloading the Excel export…";
+  downloadBlob(id).then(function(){okEl.textContent=j.message||"Done.";
+  }).catch(function(){fail("Processed, but the Excel download failed. Refresh the dashboard to see saved posts.");});}
+  }).catch(function(){setTimeout(function(){poll(id);},3000);});}
+  try{var saved=sessionStorage.getItem(key);if(saved){btn.dataset.label=btn.dataset.label||btn.textContent;btn.disabled=true;btn.textContent="Processing…";box.hidden=false;poll(saved);}}catch(e){}
+  form.addEventListener("submit",function(e){e.preventDefault();okEl.hidden=true;errEl.hidden=true;accept.hidden=true;
+  btn.dataset.label=btn.dataset.label||btn.textContent;btn.disabled=true;btn.textContent="Processing…";
+  box.hidden=false;set(0,"Uploading…","0%",false);
+  var xhr=new XMLHttpRequest();xhr.open("POST",form.getAttribute("action")||form.action);xhr.setRequestHeader("X-Upload-Mode","job");
+  xhr.upload.onprogress=function(ev){if(ev.lengthComputable){var p=100*ev.loaded/ev.total;set(p,"Uploading…",Math.round(p)+"% uploaded",false);}};
+  xhr.upload.onload=function(){set(100,"File accepted","Waiting for the server…",true);};
+  xhr.onload=function(){var j={};try{j=JSON.parse(xhr.responseText);}catch(_){}
+  if(xhr.status===202&&j.job){try{sessionStorage.setItem(key,j.job);}catch(e){}accepted(j);set(5,"File accepted","Starting…",true);poll(j.job);}
+  else if(xhr.status===413){fail("That file is too large. Try a smaller export (under 50 MB).");}
+  else{fail(j.error||("Upload failed (HTTP "+xhr.status+"). Please try again."));}};
+  xhr.onerror=function(){fail("Upload failed. Check your connection and try again.");};
+  xhr.ontimeout=function(){fail("The upload timed out. Please try again.");};
+  xhr.timeout=600000;xhr.send(new FormData(form));});
+}
+document.querySelectorAll("form.progress-form").forEach(bind);
 })();
 </script>

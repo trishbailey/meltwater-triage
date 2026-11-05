@@ -84,7 +84,7 @@ def _pdf(monkeypatch):
 def test_seerist_upload_form_and_dedupe(client, monkeypatch):
     data = _pdf(monkeypatch)
     page = client.get("/seerist").get_data(as_text=True)
-    assert "Seerist PDF" in page and 'id="progress"' in page
+    assert "Seerist PDF" in page and "progress-form" in page
     r = client.post("/seerist/upload", data={"file": (io.BytesIO(data), "s.pdf")})
     assert "Added 2 items, skipped 0 duplicates." in r.get_data(as_text=True)
     r = client.post("/seerist/upload", data={"file": (io.BytesIO(data), "s.pdf")})

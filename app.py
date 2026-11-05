@@ -88,6 +88,24 @@ def _same_origin_upload() -> bool:
     return parts.scheme in ("http", "https") and parts.netloc == request.host
 
 
+def _count_rows(files: list[tuple[str, bytes]]) -> int:
+    """Cheap row estimate so the UI can say File accepted with a count."""
+    total = 0
+    for name, data in files:
+        lower = name.lower()
+        try:
+            if lower.endswith(".csv"):
+                total += max(0, data.count(b"\n") - 1)
+            elif lower.endswith(".xlsx"):
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+                total += max(0, (wb[wb.sheetnames[0]].max_row or 1) - 1)
+                wb.close()
+        except Exception:
+            continue
+    return total
+
+
 def _public_error(exc: Exception) -> str:
     text = str(exc).replace("\n", " ").replace("\r", " ").strip()
     if len(text) > 400:
@@ -122,6 +140,11 @@ def create_app() -> Flask:
     @app.get("/")
     @require_password
     def index():
+        return redirect(url_for("dashboard"))
+
+    @app.get("/upload")
+    @require_password
+    def upload_page():
         return render_template("index.html", error=None)
 
     @app.post("/upload")
@@ -138,8 +161,11 @@ def create_app() -> Flask:
                 return {"error": "Please choose at least one file."}, 400
             return render_template("index.html", error="Please choose at least one file."), 400
         if wants_job:
+            names = ", ".join(n for n, _ in files)[:300]
+            rows_hint = _count_rows(files)
             def work(progress):
                 t0 = time.monotonic()
+                progress("File accepted", 0, rows_hint or 0)
                 try:
                     result = process(files, progress=progress)
                 except ValueError as exc:
@@ -147,12 +173,14 @@ def create_app() -> Flask:
                 except Exception as exc:
                     app.logger.warning("Upload failed: %s", type(exc).__name__)
                     raise ValueError("Could not read the uploaded file(s).") from exc
-                progress("Building the Excel file", 0, 0)
+                progress("Building the Excel export", len(result.all_posts), len(result.all_posts))
                 payload = to_workbook(result)
                 app.logger.info("Screened %d posts in %.1fs", len(result.all_posts), time.monotonic() - t0)
-                return {"payload": payload,
-                        "message": f"Screened {len(result.all_posts)} posts; {len(result.flagged)} flagged."}
-            return {"job": jobs.start("screen", work)}, 202
+                return {"payload": payload, "rows": len(result.all_posts),
+                        "message": (f"File accepted: {names}. Screened {len(result.all_posts)} posts; "
+                                    f"{len(result.flagged)} flagged. The dashboard has been updated.")}
+            jid = jobs.start("screen", work, filenames=names, rows=rows_hint)
+            return {"job": jid, "filenames": names, "rows": rows_hint}, 202
         try:
             result = process(files)
         except ValueError as exc:
@@ -178,15 +206,15 @@ def create_app() -> Flask:
         j = jobs.get(jid)
         if j is None:
             return {"error": "Job not found. It may have expired."}, 404
-        return jobs.public(j)
+        return jobs.public(j, jid)
 
     @app.get("/jobs/<jid>/download")
     @require_password
     def job_download(jid: str):
-        j = jobs.get(jid)
-        if j is None or "payload" not in j:
+        data = jobs.payload(jid)
+        if data is None:
             return Response("Download not available. It may have expired.", 404)
-        return _xlsx(j["payload"])
+        return _xlsx(data)
 
     @app.get("/seerist")
     @require_password
@@ -231,7 +259,10 @@ def create_app() -> Flask:
         if not data.startswith(b"%PDF"):
             return fail("That file is not a PDF. Upload a Seerist PDF export.", 400)
         if wants_job:
-            return {"job": jobs.start("seerist", lambda progress: _import_seerist(data, progress))}, 202
+            name = f.filename
+            jid = jobs.start("seerist", lambda progress: _import_seerist(data, progress),
+                             filenames=name, rows=0)
+            return {"job": jid, "filenames": name, "rows": 0}, 202
         try:
             res = _import_seerist(data, lambda *a: None)
         except ValueError as exc:

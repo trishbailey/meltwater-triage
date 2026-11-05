@@ -59,7 +59,7 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
             progress=None) -> Result:
     """progress(stage, done, total) is called as posts move through the pipeline."""
     report = progress or (lambda *a: None)
-    report("Reading files", 0, 0)
+    report("Reading file", 0, 0)
     df = combine_uploads(files)
     text_cols = _find_columns(df, kw.TEXT_COLUMN_OPTIONS)
     screened = screen_dataframe(df)
@@ -69,7 +69,7 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
     budget = resolve_budget(storage, open_storage=False)
     flagged = screened.loc[screened["category"] != ""].copy()
     total = len(screened)
-    report("Screening posts", total, total)
+    report("Screening posts", 0, total)
     counter = {"done": 0}
     lock = threading.Lock()
 
@@ -85,10 +85,10 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
                      progress=tick("Reviewing flagged posts", len(flagged)))
     heat_total = min(total, _heat_cap())
     counter["done"] = 0
-    report("Rating heated language", 0, heat_total)
+    report("Scoring language", 0, heat_total)
     screened = analyze_heat(screened, text_cols, complete=heat_fn, budget=budget,
-                            progress=tick("Rating heated language", heat_total))
-    report("Saving results", total, total)
+                            progress=tick("Scoring language", heat_total))
+    report("Saving for the dashboard", total, total)
     heat_cols = [c for c in ("heat_score", "heat_topic", "heat_subtopic", "heated_phrases", "heat_sampled")
                  if c in screened.columns]
     if heat_cols and "heat_sampled" in screened.columns and screened["heat_sampled"].fillna(False).astype(bool).any():
