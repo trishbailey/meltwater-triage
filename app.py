@@ -14,7 +14,12 @@ from urllib.parse import urlsplit
 from flask import Flask, Response, render_template, request, send_file
 import io
 
+import pandas as pd
+
 from triage.pipeline import process, to_workbook
+from triage import dashboard as dash
+from triage.alerts import AlertError, parse_alert
+from triage.storage import Storage, persistence_enabled
 
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "50"))
 
@@ -101,6 +106,52 @@ def create_app() -> Flask:
         name = f"flagged_posts_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.xlsx"
         return send_file(io.BytesIO(payload), as_attachment=True, download_name=name,
                          mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    def _storage():
+        if not persistence_enabled():
+            return None
+        if "storage" not in app.extensions:
+            app.extensions["storage"] = Storage()
+        return app.extensions["storage"]
+
+    @app.get("/status")
+    @require_password
+    def status():
+        st = _storage()
+        if st is None:
+            return render_template("status.html", error="Storage is not configured (DATABASE_URL is not set).", s=None)
+        cap = os.environ.get("ANTHROPIC_MONTHLY_POST_CAP")
+        return render_template("status.html", error=None, s=st.status_summary(), cap=cap)
+
+    @app.get("/dashboard")
+    @require_password
+    def dashboard():
+        st = _storage()
+        if st is None:
+            ctx = dash.build(pd.DataFrame())
+        else:
+            ctx = dash.build(st.load_posts(), st.load_alerts(), st.meltwater_first_seen(),
+                             month=request.args.get("month"))
+        return render_template("dashboard.html", **ctx)
+
+    @app.post("/api/alerts")
+    def ingest_alert():
+        expected = os.environ.get("ALERT_INGEST_TOKEN")
+        if not expected:
+            return {"error": "alert ingest is not configured"}, 503
+        auth = request.headers.get("Authorization", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        if not token or not hmac.compare_digest(token.encode("utf-8", "ignore"), expected.encode("utf-8")):
+            return {"error": "unauthorized"}, 401
+        st = _storage()
+        if st is None:
+            return {"error": "storage is not configured"}, 503
+        try:
+            alert = parse_alert(request.get_json(silent=True))
+        except AlertError as exc:
+            return {"error": str(exc)}, 400
+        alert_id, created = st.add_alert(alert)
+        return {"id": alert_id, "duplicate": not created}, 201 if created else 200
 
     return app
 

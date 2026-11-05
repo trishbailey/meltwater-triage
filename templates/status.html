@@ -1,0 +1,13 @@
+{% extends "_base.html" %}{% block title %}Status{% endblock %}{% block body %}
+<h1>Storage status</h1>
+{% if error %}<p class="panel">{{ error }}</p>{% else %}
+<div class="strip">
+ <div class="kpi"><div class="v">{{ s.runs }}</div><div class="l">Upload runs</div><div class="d">Last: {{ s.last_run or "none" }}</div></div>
+ <div class="kpi"><div class="v">{{ s.claude_posts }}</div><div class="l">Posts sent for review this month ({{ s.claude_month }})</div><div class="d">Monthly cap: {{ cap or "not set" }}</div></div>
+ <div class="kpi"><div class="v">{{ s.alerts }}</div><div class="l">Early-warning alerts</div></div>
+</div>
+<div class="panel"><h2>Stored rows by post month and flag type</h2>
+<table><thead><tr><th>Month</th><th>Type</th><th>Rows</th></tr></thead><tbody>
+{% for r in s.rows %}<tr><td>{{ r.month }}</td><td>{{ r.kind }}</td><td>{{ r.rows }}</td></tr>{% else %}<tr><td colspan="3">No rows stored yet.</td></tr>{% endfor %}
+</tbody></table></div>{% endif %}
+{% endblock %}

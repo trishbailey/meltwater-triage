@@ -22,7 +22,7 @@ from datetime import date, datetime, timezone
 
 import pandas as pd
 from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, MetaData,
-                        String, Table, Text, create_engine, event, func, select)
+                        String, Table, Text, case, create_engine, event, func, select)
 from sqlalchemy.exc import IntegrityError
 
 metadata = MetaData()
@@ -68,6 +68,20 @@ anthropic_usage = Table(
     "anthropic_usage", metadata,
     Column("month", String(7), primary_key=True),  # UTC YYYY-MM
     Column("posts_sent", Integer, nullable=False),
+)
+
+alerts = Table(
+    "alerts", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("received_at", DateTime(timezone=True), nullable=False),
+    Column("source", String(16), nullable=False, index=True),
+    Column("url", Text, nullable=False),
+    Column("url_key", Text, nullable=False, index=True),  # normalized URL for dedupe
+    Column("author", Text),
+    Column("text", Text),
+    Column("posted_at", DateTime(timezone=True), index=True),
+    Column("matched_terms", Text),       # "; "-joined
+    Column("signal_level", String(16), nullable=False),
 )
 
 _NUMERIC_ID = re.compile(r"-?\d+\.0+")
@@ -308,3 +322,53 @@ class Storage:
         return pd.DataFrame([{**(r.data or {}), "post_week": r.post_week, "post_month": r.post_month,
                               "upload_week": r.upload_week, "upload_month": r.upload_month,
                               "is_flagged": r.is_flagged} for r in rows])
+
+    # --- status and alerts -------------------------------------------------
+    def status_summary(self, now: datetime | None = None) -> dict:
+        """Row counts by post month and flag type, plus this month's Claude usage."""
+        flag = case((posts.c.is_flagged.is_(True), func.coalesce(posts.c.category, "flagged")),
+                    else_="heat only")
+        q = (select(posts.c.post_month, flag.label("kind"), func.count().label("rows"))
+             .group_by(posts.c.post_month, flag).order_by(posts.c.post_month.desc(), flag))
+        with self.engine.connect() as conn:
+            rows = [{"month": r.post_month or "no date", "kind": r.kind, "rows": r.rows}
+                    for r in conn.execute(q).all()]
+            n_runs = conn.execute(select(func.count()).select_from(runs)).scalar_one()
+            last_run = conn.execute(select(func.max(runs.c.created_at))).scalar_one()
+            n_alerts = conn.execute(select(func.count()).select_from(alerts)).scalar_one()
+        return {"rows": rows, "runs": n_runs, "last_run": last_run, "alerts": n_alerts,
+                "claude_month": _utc(now).strftime("%Y-%m"),
+                "claude_posts": self.posts_sent_this_month(now)}
+
+    def add_alert(self, alert: dict, now: datetime | None = None) -> tuple[int, bool]:
+        """Insert an alert; returns (id, created). A repeat of the same normalized URL keeps
+        the first-seen row (and its received_at)."""
+        from .alerts import normalize_url
+        alert = {**alert, "url_key": normalize_url(alert["url"])}
+        with self.engine.begin() as conn:
+            old = conn.execute(select(alerts.c.id).where(alerts.c.url_key == alert["url_key"])).first()
+            if old:
+                return old[0], False
+            new_id = conn.execute(alerts.insert().values(received_at=_utc(now), **alert)).inserted_primary_key[0]
+            return new_id, True
+
+    def load_alerts(self, limit: int = 200) -> pd.DataFrame:
+        q = (select(alerts).order_by(func.coalesce(alerts.c.posted_at, alerts.c.received_at).desc())
+             .limit(limit))
+        with self.engine.connect() as conn:
+            return pd.DataFrame([dict(r) for r in conn.execute(q).mappings().all()],
+                                columns=[c.name for c in alerts.columns])
+
+    def meltwater_first_seen(self) -> dict:
+        """Normalized post URL -> when the post first arrived via a Meltwater upload."""
+        from .alerts import normalize_url
+        q = select(posts.c.link, posts.c.data, runs.c.created_at).join(runs, runs.c.id == posts.c.first_run_id)
+        out: dict = {}
+        with self.engine.connect() as conn:
+            for link, data, created in conn.execute(q).all():
+                link = link or _lc(data or {}, "url")
+                if link:
+                    k = normalize_url(str(link))
+                    if k and (k not in out or created < out[k]):
+                        out[k] = created
+        return out
