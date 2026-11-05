@@ -1,0 +1,10 @@
+# Never commit client data
+*.xlsx
+*.xls
+*.csv
+data/
+uploads/
+.env
+__pycache__/
+.pytest_cache/
+.venv/
