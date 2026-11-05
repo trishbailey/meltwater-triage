@@ -290,11 +290,30 @@ def create_app() -> Flask:
     def dashboard():
         st = _storage()
         if st is None:
-            ctx = dash.build(pd.DataFrame())
+            ctx = dash.build(pd.DataFrame(), map_days=30)
         else:
+            days = request.args.get("map_days", "30")
+            try:
+                map_days = None if days in ("all", "") else max(1, min(3650, int(days)))
+            except ValueError:
+                map_days = 30
             ctx = dash.build(st.load_posts(), st.load_alerts(), st.meltwater_first_seen(),
-                             month=request.args.get("month"))
+                             month=request.args.get("month"), map_days=map_days)
         return render_template("dashboard.html", **ctx)
+
+    @app.get("/api/map")
+    @require_password
+    def api_map():
+        st = _storage()
+        days = request.args.get("days", "30")
+        try:
+            map_days = None if days in ("all", "") else max(1, min(3650, int(days)))
+        except ValueError:
+            map_days = 30
+        from triage.mapdata import build_map
+        if st is None:
+            return build_map(pd.DataFrame(), None, days=map_days)
+        return build_map(st.load_posts(), st.load_alerts(limit=500), days=map_days)
 
     @app.post("/alerts/<int:alert_id>/delete")
     @require_password

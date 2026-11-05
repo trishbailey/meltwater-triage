@@ -62,6 +62,18 @@ label{display:block;font-size:14px;margin:0 0 6px}
 .pfill.busy{width:100%!important;background:repeating-linear-gradient(45deg,var(--gold) 0 12px,#a8873a 12px 24px);background-size:34px 34px;animation:pmove 1s linear infinite}
 @keyframes pmove{to{background-position:34px 0}}
 .okmsg{color:#2fd6b5;font-size:15px}
+.dash-map{height:min(420px,70vh);width:100%;border:1px solid var(--line);border-radius:8px;margin:10px 0;z-index:1;background:#0b1526}
+.map-filters{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+.map-filters .btn[aria-current=true]{border-color:var(--gold);background:var(--gold);color:#0b1526;font-weight:700}
+.map-pin{display:block;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #0b1526}
+.map-tip{font-size:13px!important}
+.leaflet-container{font:13px/1.4 system-ui,sans-serif;background:#0b1526}
+.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--panel);color:var(--text);border:1px solid var(--line)}
+.leaflet-popup-content{margin:10px 12px;font-size:13px}
+.leaflet-control-attribution{font-size:11px;background:rgba(11,21,38,.85)!important;color:var(--muted)!important}
+.leaflet-control-attribution a{color:#7cc4ff}
+@media (max-width:720px){.dash-map{height:320px}}
+
 .narrow{max-width:420px;margin:8vh auto 0}
 html{color-scheme:dark;background:var(--bg)}
 input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{-webkit-text-fill-color:var(--text);-webkit-box-shadow:0 0 0 1000px var(--panel2) inset;caret-color:var(--text)}

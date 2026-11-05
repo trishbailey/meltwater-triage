@@ -5,6 +5,71 @@
 <div class="fill" style="width:{{ it.pct }}%;background:{{ it.color or color }}"></div><span class="val">{{ "{:,}".format(it.value) }} {{ unit if it.value != 1 else unit[:-1] }}</span></div></div>
 {% endfor %}</div>{% endmacro %}
 <h1>Threat and Protest Monitor</h1>
+<section class="panel" id="map-panel"><h2>Sites and protest activity</h2>
+<p class="how">Fixed markers show defense and civic sites. Circles mark protest locations from Meltwater analysis and early-warning alerts. Dates use the post or alert time.</p>
+<div class="map-filters" role="group" aria-label="Map date range">
+<button type="button" class="btn map-range" data-days="7">Last 7 days</button>
+<button type="button" class="btn map-range" data-days="30" aria-current="true">Last 30 days</button>
+<button type="button" class="btn map-range" data-days="90">Last 90 days</button>
+<button type="button" class="btn map-range" data-days="all">All time</button>
+</div>
+<div id="dash-map" class="dash-map" role="img" aria-label="Map of sites and protest events"></div>
+<div class="legend" id="map-legend">{% for item in map.legend %}<span><i class="sw" style="background:{{ item.color }}"></i>{{ item.label }}</span>{% endfor %}
+<span class="note" id="map-count"></span></div>
+<p class="note">Map tiles © <a href="https://carto.com/attributions" rel="noopener noreferrer" target="_blank">CARTO</a>, data © <a href="https://www.openstreetmap.org/copyright" rel="noopener noreferrer" target="_blank">OpenStreetMap</a>.</p>
+</section>
+<script type="application/json" id="map-assets">{{ map.assets|tojson }}</script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+(function(){
+if(!window.L)return;
+var assets=JSON.parse(document.getElementById("map-assets").textContent||"[]");
+var map=L.map("dash-map",{scrollWheelZoom:false, attributionControl:true}).setView([-26.5,134.5],4);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{
+  attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+  subdomains:"abcd", maxZoom:19
+}).addTo(map);
+var assetLayer=L.layerGroup().addTo(map), eventLayer=L.layerGroup().addTo(map);
+function assetIcon(color){
+  return L.divIcon({className:"map-asset", html:'<span class="map-pin" style="background:'+color+'"></span>', iconSize:[14,14], iconAnchor:[7,7]});
+}
+assets.forEach(function(a){
+  L.marker([a.lat,a.lon],{icon:assetIcon(a.color||"#3dd6f5")})
+    .bindPopup('<div style="font-size:13px"><strong>'+a.label+'</strong><br>Defense / civic site</div>')
+    .bindTooltip(a.label,{permanent:false,direction:"top",offset:[0,-6],className:"map-tip"})
+    .addTo(assetLayer);
+});
+function popup(e){
+  var html='<div style="font-size:13px"><strong>'+ (e.place||e.label||"Event") +'</strong>';
+  if(e.date) html+='<br>'+e.date;
+  if(e.source) html+='<br>Source: '+e.source;
+  if(e.text) html+='<br>'+e.text.replace(/[<>&]/g,function(c){return ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]);});
+  if(e.url) html+='<br><a href="'+e.url+'" rel="noopener noreferrer" target="_blank">Open source</a>';
+  return html+'</div>';
+}
+function load(days){
+  document.querySelectorAll(".map-range").forEach(function(b){b.setAttribute("aria-current", b.dataset.days===String(days)?"true":null);});
+  document.getElementById("map-count").textContent="Loading events…";
+  fetch("/api/map?days="+encodeURIComponent(days),{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(data){
+    eventLayer.clearLayers();
+    (data.events||[]).forEach(function(e){
+      L.circleMarker([e.lat,e.lon],{radius:8,color:e.color,fillColor:e.color,fillOpacity:0.85,weight:1})
+        .bindPopup(popup(e)).addTo(eventLayer);
+    });
+    document.getElementById("map-count").textContent=(data.events||[]).length+" event"+(data.events&&data.events.length===1?"":"s")+" shown";
+    var bounds=[];
+    assets.forEach(function(a){bounds.push([a.lat,a.lon]);});
+    (data.events||[]).forEach(function(e){bounds.push([e.lat,e.lon]);});
+    if(bounds.length) map.fitBounds(bounds,{padding:[24,24], maxZoom:6});
+    setTimeout(function(){map.invalidateSize();},50);
+  }).catch(function(){document.getElementById("map-count").textContent="Could not load map events."});
+}
+document.querySelectorAll(".map-range").forEach(function(b){b.addEventListener("click",function(){load(b.dataset.days);});});
+load("{{ map.days if map.days is not none else 'all' }}");
+})();
+</script>
+
 <p class="intro">Monthly view of threatening language and protest activity in monitored media coverage of the Australia, United Kingdom and United States security partnership (AUKUS) and related defense programs.</p>
 {% if not has_data %}
 <div class="panel"><p>No Meltwater uploads are stored yet. Upload an export on the main page to populate this dashboard.</p></div>
