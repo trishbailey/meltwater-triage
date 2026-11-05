@@ -49,7 +49,7 @@ def _bounded_int(value, default: int, *, positive: bool) -> int:
 
 
 def analyze_heat(df: pd.DataFrame, text_cols: list, complete=None, max_posts: int | None = None,
-                 batch_size: int | None = None, budget=None) -> pd.DataFrame:
+                 batch_size: int | None = None, budget=None, progress=None) -> pd.DataFrame:
     """Return df with heat columns plus heat_sampled (True where a request was sent)."""
     if complete is None:
         if not is_enabled():
@@ -76,19 +76,31 @@ def analyze_heat(df: pd.DataFrame, text_cols: list, complete=None, max_posts: in
         idx = list(out.index)
     results: dict[int, dict] = {}
     sent: list[int] = []
+    jobs = []
     for start in range(0, len(idx), batch_size):
         chunk = idx[start:start + batch_size]
-        allowed = budget.take(len(chunk))
+        allowed = budget.take(len(chunk))  # reserved serially so the caps hold
         if allowed <= 0:
             break
         chunk = chunk[:allowed]
         sent.extend(chunk)
         payload = [{"id": int(i), "text": " ".join(str(out.at[i, c]) for c in text_cols
                                                    if pd.notna(out.at[i, c]))[:1500]} for i in chunk]
+        jobs.append((start, len(chunk), json.dumps({"posts": payload})))
+
+    def _run(job):
+        start, n, body = job
         try:
-            refine._absorb(results, complete(heat_prompt(), json.dumps({"posts": payload})), _clean)
+            return complete(heat_prompt(), body)
         except Exception as exc:
             log.warning("Heat batch at %d failed: %s", start, type(exc).__name__)
+            return None
+        finally:
+            if progress:
+                progress(n)
+    for reply in refine.run_concurrently(_run, jobs):
+        if reply is not None:
+            refine._absorb(results, reply, _clean)
     sampled = set(sent)
     for col in HEAT_COLUMNS:
         out[col] = [results.get(i, {}).get(col) for i in out.index]

@@ -45,6 +45,13 @@ label{display:block;font-size:14px;margin:0 0 6px}
 html{color-scheme:dark;background:var(--bg)}
 input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{-webkit-text-fill-color:var(--text);-webkit-box-shadow:0 0 0 1000px var(--panel2) inset;caret-color:var(--text)}
 input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
+.progress{margin:10px 0}.pstage{font-size:15px;margin:4px 0}
+.ptrack{background:var(--panel2);border:1px solid var(--line);border-radius:6px;height:16px;overflow:hidden;width:100%}
+.pfill{height:100%;width:0;background:var(--gold);transition:width .3s}
+.pfill.busy{width:100%!important;background:repeating-linear-gradient(45deg,var(--gold) 0 12px,#a8873a 12px 24px);background-size:34px 34px;animation:pmove 1s linear infinite}
+@keyframes pmove{to{background-position:34px 0}}
+.okmsg{color:#2fd6b5;font-size:15px}
+.chip{max-width:100%;overflow-wrap:anywhere}
 .narrow{max-width:420px;margin:8vh auto 0}
-</style></head><body><main>{% if session.get("auth") %}<nav class="topnav" aria-label="Site"><a href="/dashboard">Dashboard</a><a href="/">Upload</a><a href="/status">Status</a>
+</style></head><body><main>{% if session.get("auth") %}<nav class="topnav" aria-label="Site"><a href="/dashboard">Dashboard</a><a href="/">Upload</a><a href="/seerist">Seerist</a><a href="/status">Status</a>
 <form method="post" action="/logout" style="margin:0"><button class="btn" type="submit">Sign out</button></form></nav>{% endif %}{% block body %}{% endblock %}</main></body></html>

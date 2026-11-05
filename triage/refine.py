@@ -108,6 +108,20 @@ def anthropic_complete(max_tokens: int | None = None) -> CompleteFn:
     return complete
 
 
+def concurrency() -> int:
+    """Parallel Claude requests per stage (ANTHROPIC_CONCURRENCY, default 4, max 8)."""
+    return _env_int("ANTHROPIC_CONCURRENCY", 4, 1, 8)
+
+
+def run_concurrently(fn, jobs: list) -> list:
+    """Run fn over jobs with a small thread pool; results keep job order."""
+    if len(jobs) <= 1 or concurrency() == 1:
+        return [fn(j) for j in jobs]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(concurrency(), len(jobs))) as pool:
+        return list(pool.map(fn, jobs))
+
+
 def _post_payload(i: int, row: pd.Series, text_cols: list) -> dict:
     text = " ".join(str(row[c]) for c in text_cols if pd.notna(row[c]))
     return {"id": i, "text": text[:2000],
@@ -191,7 +205,7 @@ def _absorb(results: dict, reply_text: str, clean) -> None:
 
 
 def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None = None,
-           batch_size: int | None = None, budget=None) -> pd.DataFrame:
+           batch_size: int | None = None, budget=None, progress=None) -> pd.DataFrame:
     """Add REFINE_COLUMNS to `flagged`. Returns input unchanged if disabled."""
     if complete is None:
         if not is_enabled():
@@ -207,18 +221,30 @@ def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None =
     out = flagged.reset_index(drop=True).copy()
     results: dict[int, dict] = {}
     ids = list(range(len(out)))
+    jobs = []
     for start in range(0, len(ids), batch_size):
         chunk_ids = ids[start:start + batch_size]
-        allowed = budget.take(len(chunk_ids))
+        allowed = budget.take(len(chunk_ids))  # reserved serially so the caps hold
         if allowed <= 0:
             break
         chunk_ids = chunk_ids[:allowed]
         chunk = out.iloc[chunk_ids]
         payload = [_post_payload(int(i), r, text_cols) for i, r in chunk.iterrows()]
+        jobs.append((start, len(chunk_ids), json.dumps({"posts": payload})))
+
+    def _run(job):
+        start, n, body = job
         try:
-            _absorb(results, complete(SYSTEM_PROMPT, json.dumps({"posts": payload})), _clean)
+            return complete(SYSTEM_PROMPT, body)
         except Exception as exc:  # keep keyword results if the review fails
             log.warning("Refinement batch at row %d failed: %s", start, type(exc).__name__)
+            return None
+        finally:
+            if progress:
+                progress(n)
+    for reply in run_concurrently(_run, jobs):
+        if reply is not None:
+            _absorb(results, reply, _clean)
     for col in REFINE_COLUMNS:
         out[col] = [results.get(i, {}).get(col) for i in range(len(out))]
     return out

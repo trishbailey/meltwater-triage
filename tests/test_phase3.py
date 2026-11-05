@@ -192,3 +192,12 @@ def test_palette_distinct():
     for i, a in enumerate(cols):
         for b in cols[i + 1:]:
             assert coloraide.Color(a).delta_e(b, method="2000") >= 20, (a, b)
+
+
+def test_seerist_color_distinct_from_everything():
+    coloraide = pytest.importorskip("coloraide")
+    seerist = dash.SOURCE_COLORS["seerist"]
+    others = [c for k, c in dash.SOURCE_COLORS.items() if k != "seerist"]
+    others += list(dash.COLORS.values()) + list(dash.SIGNAL_COLORS.values())
+    for o in others:
+        assert coloraide.Color(seerist).delta_e(o, method="2000") >= 20, o

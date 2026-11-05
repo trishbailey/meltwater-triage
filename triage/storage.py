@@ -340,11 +340,13 @@ class Storage:
                 "claude_month": _utc(now).strftime("%Y-%m"),
                 "claude_posts": self.posts_sent_this_month(now)}
 
-    def add_alert(self, alert: dict, now: datetime | None = None) -> tuple[int, bool]:
+    def add_alert(self, alert: dict, now: datetime | None = None,
+                  url_key: str | None = None) -> tuple[int, bool]:
         """Insert an alert; returns (id, created). A repeat of the same normalized URL keeps
-        the first-seen row (and its received_at)."""
+        the first-seen row (and its received_at). url_key overrides the key for items with
+        no URL (Seerist items use a hash of title plus date)."""
         from .alerts import normalize_url
-        alert = {**alert, "url_key": normalize_url(alert["url"])}
+        alert = {**alert, "url_key": url_key or normalize_url(alert["url"])}
         with self.engine.begin() as conn:
             old = conn.execute(select(alerts.c.id).where(alerts.c.url_key == alert["url_key"])).first()
             if old:

@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-SOURCES = ("x", "bluesky", "facebook", "instagram", "newsletter")
+SOURCES = ("x", "bluesky", "facebook", "instagram", "newsletter", "seerist")
 SIGNAL_LEVELS = ("critical", "high", "medium", "low")  # most to least severe
 MAX_TEXT = 5000
 
