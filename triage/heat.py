@@ -13,20 +13,25 @@ import os
 
 import pandas as pd
 
+from . import keywords as kw
 from . import refine
 
 log = logging.getLogger(__name__)
 
-HEAT_COLUMNS = ["heat_score", "heat_topic", "heated_phrases"]
+HEAT_COLUMNS = ["heat_score", "heat_topic", "heat_subtopic", "heated_phrases"]
 
-HEAT_PROMPT = (
+_HEAT_PROMPT_TEMPLATE = (
     "You rate the hostility (heat) of social media and news posts about a defense program and "
     "related politics. For each post return JSON {\"results\": [{\"id\": int, \"heat_score\": "
     "integer 0-10 (0 calm/neutral, 5 angry or insulting, 8+ dehumanizing, threatening, or "
-    "inciting), \"topic\": string (2-5 words, reuse the same wording for the same topic), "
+    "inciting), \"topic\": exactly one of {topics}, \"subtopic\": string (2-6 words, free text), "
     "\"heated_phrases\": [short exact quotes from the post, empty if none]}]}. One result per "
     "input id. Use American spelling."
 )
+
+
+def heat_prompt() -> str:
+    return _HEAT_PROMPT_TEMPLATE.replace("{topics}", json.dumps(kw.HEAT_TOPICS))
 
 
 def is_enabled() -> bool:
@@ -81,7 +86,7 @@ def analyze_heat(df: pd.DataFrame, text_cols: list, complete=None, max_posts: in
         payload = [{"id": int(i), "text": " ".join(str(out.at[i, c]) for c in text_cols
                                                    if pd.notna(out.at[i, c]))[:1500]} for i in chunk]
         try:
-            refine._absorb(results, complete(HEAT_PROMPT, json.dumps({"posts": payload})), _clean)
+            refine._absorb(results, complete(heat_prompt(), json.dumps({"posts": payload})), _clean)
         except Exception as exc:
             log.warning("Heat batch at %d failed: %s", start, type(exc).__name__)
     sampled = set(sent)
@@ -91,6 +96,15 @@ def analyze_heat(df: pd.DataFrame, text_cols: list, complete=None, max_posts: in
     return out
 
 
+def _topic(value) -> str:
+    """Map to a fixed HEAT_TOPICS entry (case-insensitive); anything else becomes "other"."""
+    v = str(value or "").strip().lower()
+    if not v:
+        return ""
+    lookup = {t.lower(): t for t in kw.HEAT_TOPICS}
+    return lookup.get(v, "other")
+
+
 def _clean(item: dict) -> dict:
     try:
         score = max(0, min(10, int(round(float(item.get("heat_score"))))))
@@ -98,6 +112,7 @@ def _clean(item: dict) -> dict:
         score = None
     return {
         "heat_score": score,
-        "heat_topic": str(item.get("topic") or "").strip().lower()[:100],
+        "heat_topic": _topic(item.get("topic")),
+        "heat_subtopic": str(item.get("subtopic") or "").strip().lower()[:100],
         "heated_phrases": refine._join_list(item.get("heated_phrases")),
     }

@@ -78,7 +78,7 @@ def _heat_fake(calls):
         posts = json.loads(user)["posts"]
         calls.append(len(posts))
         return json.dumps({"results": [{"id": p["id"], "heat_score": p["id"] % 11,
-                                        "topic": "Costs" if p["id"] % 2 else "sovereignty",
+                                        "topic": "Program Cost and Value" if p["id"] % 2 else "sovereignty and US alliance",
                                         "heated_phrases": ["x"]} for p in posts]})
     return fake
 
@@ -92,7 +92,7 @@ def test_heat_cap_and_batches(monkeypatch):
     assert calls == [5, 5, 2]
     assert out["heat_sampled"].sum() == 12 and out["heat_score"].notna().sum() == 12
     topics = heat_by_topic(out)
-    assert set(topics["topic"]) <= {"costs", "sovereignty"}
+    assert set(topics["topic"]) <= {"program cost and value", "sovereignty and US alliance"}
     assert topics["avg_heat"].is_monotonic_decreasing
     assert {"total_heat", "total_engagement"} <= set(topics.columns)
 
@@ -408,3 +408,17 @@ def test_anthropic_call_uses_supported_args(monkeypatch):
     monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
     assert anthropic_complete()("sys", "{}") == '{"results": []}'
     assert set(seen) <= allowed
+
+
+def test_heat_topics_fixed_list_with_subtopic():
+    from triage import keywords as kw
+    from triage.heat import heat_prompt
+    for t in kw.HEAT_TOPICS:
+        assert t in heat_prompt()
+    df = pd.DataFrame({"Hit Sentence": ["a", "b", "c"]})
+    out = analyze_heat(df, ["Hit Sentence"], complete=lambda s, u: json.dumps({"results": [
+        {"id": 0, "heat_score": 5, "topic": "JOBS AND INDUSTRY", "subtopic": "Shipyard Hiring"},
+        {"id": 1, "heat_score": 2, "topic": "made-up topic", "subtopic": "x"},
+        {"id": 2, "heat_score": 1}]}))
+    assert out["heat_topic"].tolist() == ["jobs and industry", "other", ""]
+    assert out.loc[0, "heat_subtopic"] == "shipyard hiring"

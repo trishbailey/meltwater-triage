@@ -57,7 +57,7 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
     flagged = screened.loc[screened["category"] != ""].copy()
     flagged = refine(flagged, text_cols, complete=refine_fn, budget=budget)
     screened = analyze_heat(screened, text_cols, complete=heat_fn, budget=budget)
-    heat_cols = [c for c in ("heat_score", "heat_topic", "heated_phrases", "heat_sampled")
+    heat_cols = [c for c in ("heat_score", "heat_topic", "heat_subtopic", "heated_phrases", "heat_sampled")
                  if c in screened.columns]
     if heat_cols and "heat_sampled" in screened.columns and screened["heat_sampled"].fillna(False).astype(bool).any():
         flagged = flagged.drop(columns=[c for c in heat_cols if c in flagged.columns], errors="ignore")

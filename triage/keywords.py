@@ -319,3 +319,17 @@ WEAK_PROTEST_TERMS = [
     "training",
     "outside",
 ]
+
+# Fixed heat topics. Claude must pick one (exact wording); free text goes to heat_subtopic.
+# Keep "other" as the catch-all.
+HEAT_TOPICS = [
+    "program cost and value",
+    "sovereignty and US alliance",
+    "nuclear safety and waste",
+    "war risk and China",
+    "jobs and industry",
+    "inquiry and transparency",
+    "protest and activism",
+    "politicians and government",
+    "other",
+]

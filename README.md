@@ -53,7 +53,7 @@ Protest fields from the review: `protest_location`, `protest_topic`, `organizers
 
 ## Heated-language analysis
 Covers all screened posts, not just keyword hits. Each scored post gets `heat_score` (0-10),
-`heat_topic`, `heated_phrases`, `heat_sampled`. Cost is capped by `HEAT_MAX_POSTS`
+`heat_topic` (one of `HEAT_TOPICS` in `triage/keywords.py`, else "other"), `heat_subtopic` (free text), `heated_phrases`, `heat_sampled`. Cost is capped by `HEAT_MAX_POSTS`
 (default 300; above that the highest-engagement posts are scored first) and batched by
 `HEAT_BATCH_SIZE` (default 25). `HEAT_DISABLED=1` turns it off; it is skipped without
 `ANTHROPIC_API_KEY`. Heat shares `ANTHROPIC_MONTHLY_POST_CAP` with the review stage.
