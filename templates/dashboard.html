@@ -16,7 +16,7 @@
 <div id="dash-map" class="dash-map" role="img" aria-label="Map of sites and protest events"></div>
 <div class="legend" id="map-legend">{% for item in map.legend %}<span><i class="sw" style="background:{{ item.color }}"></i>{{ item.label }}</span>{% endfor %}
 <span class="note" id="map-count"></span></div>
-<p class="note">Map tiles © <a href="https://carto.com/attributions" rel="noopener noreferrer" target="_blank">CARTO</a>, data © <a href="https://www.openstreetmap.org/copyright" rel="noopener noreferrer" target="_blank">OpenStreetMap</a>.</p>
+<p class="note">Map tiles © <a href="https://www.esri.com/" rel="noopener noreferrer" target="_blank">Esri</a>, © OpenStreetMap contributors, © CARTO.</p>
 </section>
 <script type="application/json" id="map-assets">{{ map.assets|tojson }}</script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
@@ -26,9 +26,9 @@
 if(!window.L)return;
 var assets=JSON.parse(document.getElementById("map-assets").textContent||"[]");
 var map=L.map("dash-map",{scrollWheelZoom:false, attributionControl:true}).setView([-26.5,134.5],4);
-L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{
-  attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-  subdomains:"abcd", maxZoom:19
+L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",{
+  attribution:'Tiles &copy; <a href="https://www.esri.com/">Esri</a> &mdash; Esri, HERE, Garmin, FAO, NOAA, USGS',
+  maxZoom:16
 }).addTo(map);
 var assetLayer=L.layerGroup().addTo(map), eventLayer=L.layerGroup().addTo(map);
 function assetIcon(color){
@@ -121,7 +121,7 @@ load("{{ map.days if map.days is not none else 'all' }}");
 {% endif %}
 
 <section class="panel" id="early-warning"><h2>Early warning from monitored channels</h2>
-<p class="how">A separate layer of alerts from X, Bluesky, Facebook, Instagram, newsletters and Seerist reports. These alerts are not counted in any Meltwater total above.</p>
+<p class="how">A separate layer of alerts from X, Bluesky, Facebook, Instagram, newsletters, Seerist reports and web/RSS sources. These alerts are not counted in any Meltwater total above.</p>
 {% if alerts.items %}
 <p class="finding">{{ alerts.total }} alert{{ "s" if alerts.total != 1 }}; {{ alerts.confirmed }} later confirmed in Meltwater{% if alerts.median_lead %}, a median {{ alerts.median_lead }} earlier{% endif %}.</p>
 <div class="bars">{% for b in alerts.by_source %}<div class="bar"><div class="lab">{{ b.label }}</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ b.pct }}%;background:{{ b.color }}"></div><span class="val">{{ b.value }} alert{{ "s" if b.value != 1 }}</span></div></div>{% endfor %}</div>

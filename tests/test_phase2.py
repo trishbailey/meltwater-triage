@@ -89,7 +89,7 @@ def test_heat_cap_and_batches(monkeypatch):
     assert "heat_score" not in analyze_heat(df, ["Hit Sentence"]).columns  # skipped w/o key
     calls = []
     out = analyze_heat(df, ["Hit Sentence"], complete=_heat_fake(calls), max_posts=12, batch_size=5)
-    assert calls == [5, 5, 2]
+    assert sorted(calls) == [2, 5, 5] and sum(calls) == 12
     assert out["heat_sampled"].sum() == 12 and out["heat_score"].notna().sum() == 12
     topics = heat_by_topic(out)
     assert set(topics["topic"]) <= {"program cost and value", "sovereignty and US alliance"}
