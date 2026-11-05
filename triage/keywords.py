@@ -289,3 +289,11 @@ TEXT_COLUMN_OPTIONS = [
 
 # Columns tried, in order, for the output "link" column.
 LINK_COLUMN_OPTIONS = ["url", "link", "permalink"]
+
+# Engagement/reach columns coerced to numbers in the output (case-insensitive).
+NUMERIC_COLUMNS = [
+    "engagement", "shares", "quotes", "likes", "replies", "reposts", "comments",
+    "reactions", "views", "estimated views", "reach", "global reach",
+    "national reach", "local reach", "episode reach", "social echo",
+    "editorial echo", "ave", "emv",
+]

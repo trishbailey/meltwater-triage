@@ -126,6 +126,15 @@ def _find_columns(df: pd.DataFrame, options: list[str]) -> list:
     return [lower[o] for o in options if o in lower]
 
 
+def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    """Parse engagement columns as numbers (handles "1,234" and blanks)."""
+    out = df.copy()
+    for col in _find_columns(df, kw.NUMERIC_COLUMNS):
+        cleaned = out[col].astype(str).str.replace(r"[,\s\"]", "", regex=True)
+        out[col] = pd.to_numeric(cleaned.replace({"": None, "nan": None, "None": None}), errors="coerce")
+    return out
+
+
 def screen_dataframe(df: pd.DataFrame, p: Patterns | None = None) -> pd.DataFrame:
     """Annotate every row; original columns are kept untouched."""
     p = p or Patterns()
@@ -135,7 +144,7 @@ def screen_dataframe(df: pd.DataFrame, p: Patterns | None = None) -> pd.DataFram
                          + ", ".join(map(str, df.columns)))
     text = df[text_cols].astype(object).fillna("").astype(str).agg(" ".join, axis=1).str.strip()
     results = pd.DataFrame([screen_text(t, p) for t in text], index=df.index)
-    out = df.copy()
+    out = coerce_numeric(df)
     link_cols = _find_columns(df, kw.LINK_COLUMN_OPTIONS)
     out["link"] = df[link_cols[0]] if link_cols else ""
     for col in results.columns:

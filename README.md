@@ -7,6 +7,9 @@ Upload one or more Meltwater downloads (`.xlsx`, `.xls`, `.csv`). The app return
 file of flagged posts with all original columns plus `uploaded_file`, `worksheet`, `link`,
 `matched_keywords`, `category` (`threat` / `protest` / `both`) and `mobilization_status`.
 
+Engagement and reach columns (Engagement, Shares, Likes, Views, Reach, Social Echo, etc.;
+see `NUMERIC_COLUMNS`) are kept and parsed as numbers.
+
 ## Logic
 - **Threat**: a threat-language term (`THREAT_TERMS`) AND a target term
   (`AUKUS_TARGET_TERMS` + `PERSON_ROLE_TERMS` + `PERSON_NAMES`) in the same post.
@@ -20,7 +23,8 @@ Edit all keyword lists in **`triage/keywords.py`**.
 
 ## Optional review stage
 If `ANTHROPIC_API_KEY` is set, each flagged post is reviewed by Anthropic Claude in batches and gains columns
-`is_genuine`, `refined_category`, `narrative_summary`, `theme`, `severity`. Without a key
+`is_genuine`, `refined_category`, `narrative_summary`, `theme`, `severity`,
+`threat_type`, `targets`, `named_individuals` (lists stored as `; `-separated text). Without a key
 the stage is skipped. Settings: `REFINE_MODEL` (default `claude-haiku-4-5`),
 `REFINE_BATCH_SIZE` (default 20), `REFINE_DISABLED=1` to turn it off. A failed batch
 leaves those columns blank and keeps the keyword results. Code: `triage/refine.py`.

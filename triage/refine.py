@@ -16,7 +16,14 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-haiku-4-5"
-REFINE_COLUMNS = ["is_genuine", "refined_category", "narrative_summary", "theme", "severity"]
+REFINE_COLUMNS = [
+    "is_genuine", "refined_category", "narrative_summary", "theme", "severity",
+    "threat_type", "targets", "named_individuals",
+]
+THREAT_TYPES = {
+    "violence", "death threat", "bombing or arson", "sabotage", "doxxing", "harassment",
+    "call to protest", "call to disruption", "other", "none",
+}
 VALID_CATEGORIES = {"threat", "protest", "both", "none"}
 VALID_SEVERITY = {"low", "medium", "high", "critical"}
 
@@ -27,7 +34,12 @@ SYSTEM_PROMPT = (
     "whether the flag is genuine. Return JSON: {\"results\": [{\"id\": int, \"is_genuine\": bool, "
     "\"refined_category\": \"threat\"|\"protest\"|\"both\"|\"none\", \"narrative_summary\": "
     "string (max 30 words), \"theme\": string (2-5 words), \"severity\": "
-    "\"low\"|\"medium\"|\"high\"|\"critical\"}]}. One result per input id. Use American spelling."
+    "\"low\"|\"medium\"|\"high\"|\"critical\", \"threat_type\": one of \"violence\"|"
+    "\"death threat\"|\"bombing or arson\"|\"sabotage\"|\"doxxing\"|\"harassment\"|"
+    "\"call to protest\"|\"call to disruption\"|\"other\"|\"none\", \"targets\": [strings: "
+    "people, groups, places, or institutions the post targets or mentions as targets], "
+    "\"named_individuals\": [strings: named politicians and other named people]}]}. "
+    "One result per input id. Use American spelling."
 )
 
 # A completion function takes (system, user) and returns the JSON string reply.
@@ -68,13 +80,31 @@ def _post_payload(i: int, row: pd.Series, text_cols: list) -> dict:
 def _clean(item: dict) -> dict:
     cat = str(item.get("refined_category", "")).lower()
     sev = str(item.get("severity", "")).lower()
+    tt = str(item.get("threat_type", "")).strip().lower()
     return {
         "is_genuine": bool(item.get("is_genuine")) if "is_genuine" in item else None,
         "refined_category": cat if cat in VALID_CATEGORIES else "",
         "narrative_summary": str(item.get("narrative_summary", ""))[:500],
         "theme": str(item.get("theme", ""))[:100],
         "severity": sev if sev in VALID_SEVERITY else "",
+        "threat_type": tt if tt in THREAT_TYPES else ("other" if tt else ""),
+        "targets": _join_list(item.get("targets")),
+        "named_individuals": _join_list(item.get("named_individuals")),
     }
+
+
+def _join_list(value) -> str:
+    """Store lists as "; "-joined text (split on "; " for dashboard aggregation)."""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return ""
+    seen = []
+    for v in value:
+        v = str(v).strip()
+        if v and v.lower() not in {s.lower() for s in seen}:
+            seen.append(v)
+    return "; ".join(seen)[:500]
 
 
 def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None = None,

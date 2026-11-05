@@ -118,13 +118,18 @@ def test_refine_with_mock_batches():
         calls.append(len(posts))
         return json.dumps({"results": [
             {"id": p["id"], "is_genuine": p["id"] != 1, "refined_category": "THREAT",
-             "narrative_summary": "s", "theme": "t", "severity": "High"} for p in posts]})
+             "narrative_summary": "s", "theme": "t", "severity": "High",
+             "threat_type": "Bombing or Arson", "targets": ["HMAS Stirling", "hmas stirling", "Navy"],
+             "named_individuals": ["Jane Doe"]} for p in posts]})
 
     flagged = flag_posts(synthetic_df(), refine_fn=lambda s, u: '{"results": []}')
     out = refine(flagged.drop(columns=REFINE_COLUMNS), ["Hit Sentence"], complete=fake, batch_size=2)
     assert calls == [2, 1]
     assert list(out["is_genuine"]) == [True, False, True]
     assert set(out["refined_category"]) == {"threat"} and set(out["severity"]) == {"high"}
+    assert set(out["threat_type"]) == {"bombing or arson"}
+    assert out.loc[0, "targets"] == "HMAS Stirling; Navy"
+    assert out.loc[0, "named_individuals"] == "Jane Doe"
 
 
 def test_refine_failure_keeps_rows():
@@ -132,3 +137,14 @@ def test_refine_failure_keeps_rows():
         raise RuntimeError("api down")
     out = flag_posts(synthetic_df(), refine_fn=boom)
     assert len(out) == 3 and out["severity"].isna().all()
+
+
+def test_engagement_columns_kept_numeric():
+    df = synthetic_df()
+    df["Likes"] = ["1,234", "5", "", None, "7"]
+    df["Reach"] = [100, 200, 300, 400, 500]
+    df["Social Echo"] = ["", "", "", "", ""]
+    out = flag_posts(df)
+    assert out["Likes"].tolist()[:2] == [1234, 5]
+    assert pd.api.types.is_numeric_dtype(out["Reach"])
+    assert pd.api.types.is_numeric_dtype(out["Social Echo"])
