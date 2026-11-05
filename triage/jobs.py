@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from sqlalchemy import (Column, DateTime, Integer, MetaData, String, Table, Text,
+from sqlalchemy import (Column, DateTime, Integer, LargeBinary, MetaData, String, Table, Text,
                         create_engine, delete, select, update)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -47,6 +47,7 @@ jobs_table = Table(
     Column("has_download", Integer, nullable=False, default=0),
     Column("started", DateTime(timezone=True), nullable=False),
     Column("updated", DateTime(timezone=True), nullable=False),
+    Column("payload", LargeBinary),
 )
 
 
@@ -126,7 +127,7 @@ def _write_db(jid: str, fields: dict) -> None:
         log.warning("Job status write failed: %s", type(exc).__name__)
 
 
-def _update_db(jid: str, fields: dict) -> None:
+def _update_db(jid: str, fields: dict, payload: bytes | None = None) -> None:
     if not _use_db():
         return
     try:
@@ -134,11 +135,21 @@ def _update_db(jid: str, fields: dict) -> None:
                                        "filenames", "rows", "added", "skipped", "items") if k in fields}
         if "has_download" in fields:
             vals["has_download"] = 1 if fields["has_download"] else 0
+        if payload is not None:
+            vals["payload"] = payload
+            vals["has_download"] = 1
         vals["updated"] = _utc()
         with _eng().begin() as conn:
-            conn.execute(update(jobs_table).where(jobs_table.c.id == jid).values(**vals))
+            # Ensure payload column exists on older DBs
+            try:
+                conn.execute(update(jobs_table).where(jobs_table.c.id == jid).values(**vals))
+            except Exception:
+                metadata.create_all(_eng())
+                conn.execute(update(jobs_table).where(jobs_table.c.id == jid).values(**vals))
     except Exception as exc:
         log.warning("Job status update failed: %s", type(exc).__name__)
+
+
 
 
 def start(kind: str, work: Callable[[Callable], dict], *, filenames: str = "", rows: int = 0) -> str:
@@ -167,10 +178,13 @@ def start(kind: str, work: Callable[[Callable], dict], *, filenames: str = "", r
                 JOB_DIR.mkdir(parents=True, exist_ok=True)
                 (JOB_DIR / f"{jid}.bin").write_bytes(payload)
                 result["has_download"] = True
+                result["_payload_bytes"] = payload
             with _lock:
-                _jobs[jid].update(state="done", updated=time.time(), _ts=time.time(), **result)
+                if payload is not None:
+                    _jobs[jid]["payload"] = payload
+                _jobs[jid].update(state="done", updated=time.time(), _ts=time.time(), **{k: v for k, v in result.items() if k != "_payload_bytes"})
                 snap = dict(_jobs[jid])
-            _update_db(jid, snap)
+            _update_db(jid, {k: v for k, v in snap.items() if k != "payload"}, payload=result.get("_payload_bytes"))
         except Exception as exc:
             msg = str(exc) if isinstance(exc, ValueError) else "Could not process the upload."
             if not isinstance(exc, ValueError):
@@ -218,6 +232,15 @@ def payload(jid: str) -> bytes | None:
     p = JOB_DIR / f"{jid}.bin"
     if p.exists():
         return p.read_bytes()
+    if _use_db():
+        try:
+            with _eng().connect() as conn:
+                row = conn.execute(select(jobs_table.c.payload, jobs_table.c.has_download)
+                                   .where(jobs_table.c.id == jid)).first()
+            if row and row[0]:
+                return bytes(row[0])
+        except Exception as exc:
+            log.warning("Job payload read failed: %s", type(exc).__name__)
     return None
 
 
@@ -233,7 +256,8 @@ def list_recent_downloads(limit: int = 10) -> list[dict]:
                     .order_by(jobs_table.c.updated.desc()).limit(limit)).mappings().all()
             for row in rows:
                 jid = row["id"]
-                if not (JOB_DIR / f"{jid}.bin").exists() and not _jobs.get(jid, {}).get("payload"):
+                # Prefer jobs that still have bytes on disk, in memory, or in Postgres.
+                if not (JOB_DIR / f"{jid}.bin").exists() and not _jobs.get(jid, {}).get("payload") and not row.get("has_download"):
                     continue
                 out.append({"id": jid, "filenames": row["filenames"], "message": row["message"],
                             "rows": row["rows"], "updated": row["updated"].isoformat() if row["updated"] else ""})

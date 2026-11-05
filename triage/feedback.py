@@ -1,0 +1,112 @@
+"""User relevance labels for Meltwater posts and early-warning alerts."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (Column, DateTime, Integer, MetaData, String, Table, Text, UniqueConstraint,
+                        create_engine, delete, select)
+
+from .storage import database_url, normalize_database_url, persistence_enabled
+
+LABELS = ("relevant", "not_relevant")
+ITEM_TYPES = ("post", "alert")
+
+metadata = MetaData()
+labels = Table(
+    "relevance_labels", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("item_type", String(16), nullable=False),  # post | alert
+    Column("item_id", String(255), nullable=False),
+    Column("source", String(64)),
+    Column("label", String(16), nullable=False),
+    Column("labeled_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("item_type", "item_id", name="uq_relevance_item"),
+)
+
+_engine = None
+
+
+def _eng():
+    global _engine
+    if _engine is None:
+        _engine = create_engine(normalize_database_url(database_url()), pool_pre_ping=True)
+        metadata.create_all(_engine)
+    return _engine
+
+
+def _utc():
+    return datetime.now(timezone.utc)
+
+
+def set_label(item_type: str, item_id: str, label: str, source: str | None = None) -> dict:
+    if item_type not in ITEM_TYPES:
+        raise ValueError("item_type must be post or alert")
+    if label not in LABELS:
+        raise ValueError("label must be relevant or not_relevant")
+    item_id = str(item_id)[:255]
+    source = (source or "")[:64] or None
+    if not persistence_enabled():
+        raise RuntimeError("storage is not configured")
+    eng = _eng()
+    now = _utc()
+    with eng.begin() as conn:
+        old = conn.execute(select(labels).where(labels.c.item_type == item_type,
+                                                labels.c.item_id == item_id)).mappings().first()
+        if old:
+            conn.execute(labels.update().where(labels.c.id == old["id"]).values(
+                label=label, source=source or old["source"], labeled_at=now))
+        else:
+            conn.execute(labels.insert().values(item_type=item_type, item_id=item_id,
+                                                source=source, label=label, labeled_at=now))
+    return {"item_type": item_type, "item_id": item_id, "label": label, "source": source}
+
+
+def all_labels() -> dict[tuple[str, str], str]:
+    if not persistence_enabled():
+        return {}
+    try:
+        with _eng().connect() as conn:
+            rows = conn.execute(select(labels.c.item_type, labels.c.item_id, labels.c.label)).all()
+        return {(t, i): lab for t, i, lab in rows}
+    except Exception:
+        return {}
+
+
+def recent_examples(label: str, limit: int = 20) -> list[dict]:
+    """Return recent labels of one kind for few-shot prompts (ids only; text joined by caller)."""
+    if not persistence_enabled() or label not in LABELS:
+        return []
+    with _eng().connect() as conn:
+        rows = conn.execute(
+            select(labels).where(labels.c.label == label)
+            .order_by(labels.c.labeled_at.desc()).limit(limit)).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def noisy_terms(limit: int = 15) -> list[dict]:
+    """Precision by keyword/source from labels joined lightly via matched text in alert terms.
+
+    Uses label rows' source field; keyword breakdown needs post data from caller.
+    """
+    if not persistence_enabled():
+        return []
+    with _eng().connect() as conn:
+        rows = conn.execute(select(labels.c.source, labels.c.label)).all()
+    bag: dict[str, list[int]] = {}
+    for source, label in rows:
+        key = source or "unknown"
+        rec = bag.setdefault(key, [0, 0])  # relevant, not_relevant
+        if label == "relevant":
+            rec[0] += 1
+        else:
+            rec[1] += 1
+    out = []
+    for source, (rel, bad) in bag.items():
+        total = rel + bad
+        if total < 2:
+            continue
+        precision = rel / total if total else 0
+        out.append({"term": source, "kind": "source", "relevant": rel, "not_relevant": bad,
+                    "total": total, "precision": round(precision, 2)})
+    out.sort(key=lambda r: (r["precision"], -r["not_relevant"]))
+    return out[:limit]

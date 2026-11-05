@@ -79,6 +79,13 @@ label{display:block;font-size:14px;margin:0 0 6px}
 .map-threat{display:block;width:12px;height:12px;transform:rotate(45deg);border:2px solid;box-shadow:0 0 0 1px #0b1526}
 .map-filters .btn[aria-pressed=false]{opacity:.55}
 .upload-status{margin-top:8px}
+.rel-btns{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+.rel-btns .btn{min-height:40px;font-size:13px}
+.rel-btns .btn[aria-pressed=true]{border-color:var(--gold);background:var(--gold);color:#0b1526;font-weight:700}
+.item-hidden{opacity:.55;border-style:dashed}
+.dl-list{list-style:none;padding:0;margin:0;font-size:13px}
+.dl-list li{margin:6px 0;word-break:break-word}
+
 
 @media (max-width:720px){.dash-map{height:320px}}
 
@@ -122,4 +129,36 @@ b.addEventListener("click",function(){var open=document.body.classList.toggle("d
 })();
 </script>
 {% include "_progress.html" %}
+<script>
+(function(){
+function mark(btn){
+  var wrap=btn.closest("[data-item-type]"); if(!wrap) return;
+  var label=btn.dataset.label;
+  fetch("/api/relevance",{method:"POST",credentials:"same-origin",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({item_type:wrap.dataset.itemType,item_id:wrap.dataset.itemId,label:label,source:wrap.dataset.source||""})
+  }).then(function(r){return r.json().then(function(j){return [r.ok,j];});}).then(function(x){
+    if(!x[0]){alert(x[1].error||"Could not save label");return;}
+    wrap.dataset.label=label;
+    wrap.querySelectorAll(".rel-btns .btn").forEach(function(b){b.setAttribute("aria-pressed", b.dataset.label===label?"true":"false");});
+    wrap.classList.toggle("item-hidden", label==="not_relevant");
+    applyHide();
+  }).catch(function(){alert("Could not save label");});
+}
+function applyHide(){
+  var show=document.getElementById("show-hidden");
+  var on=show && show.checked;
+  document.querySelectorAll("[data-item-type]").forEach(function(el){
+    var hid=el.dataset.label==="not_relevant";
+    el.hidden=hid && !on;
+  });
+}
+document.addEventListener("click",function(e){
+  var b=e.target.closest(".rel-btns .btn"); if(b){e.preventDefault();mark(b);}
+});
+var show=document.getElementById("show-hidden");
+if(show) show.addEventListener("change", applyHide);
+applyHide();
+})();
+</script>
 </body></html>

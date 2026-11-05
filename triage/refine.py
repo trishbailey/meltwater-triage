@@ -204,6 +204,39 @@ def _absorb(results: dict, reply_text: str, clean) -> None:
             continue
 
 
+
+def _few_shot_block() -> str:
+    """Compact labeled examples for the review prompt (keeps token use small)."""
+    try:
+        from . import feedback as fb
+        from .storage import Storage, persistence_enabled
+        if not persistence_enabled():
+            return ""
+        st = Storage()
+        posts = st.load_posts()
+        by_id = {}
+        if posts is not None and not posts.empty:
+            for r in posts.to_dict(orient="records"):
+                by_id[str(r.get("document_id"))] = r
+        lines = []
+        for lab, title in (("relevant", "RELEVANT"), ("not_relevant", "NOT RELEVANT")):
+            rows = fb.recent_examples(lab, limit=12)
+            if not rows:
+                continue
+            lines.append(title + ":")
+            for row in rows:
+                if row["item_type"] != "post":
+                    continue
+                rec = by_id.get(str(row["item_id"])) or {}
+                data = rec.get("data") if isinstance(rec.get("data"), dict) else {}
+                text = str(data.get("Hit Sentence") or data.get("narrative_summary") or rec.get("category") or "")[:180]
+                if text:
+                    lines.append("- " + text.replace("\n", " "))
+        return "\n".join(lines)[:2500]
+    except Exception:
+        return ""
+
+
 def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None = None,
            batch_size: int | None = None, budget=None, progress=None) -> pd.DataFrame:
     """Add REFINE_COLUMNS to `flagged`. Returns input unchanged if disabled."""
@@ -235,7 +268,9 @@ def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None =
     def _run(job):
         start, n, body = job
         try:
-            return complete(SYSTEM_PROMPT, body)
+            tip = _few_shot_block()
+            system = SYSTEM_PROMPT + (("\n\nLabeled examples from the analyst:\n" + tip) if tip else "")
+            return complete(system, body)
         except Exception as exc:  # keep keyword results if the review fails
             log.warning("Refinement batch at row %d failed: %s", start, type(exc).__name__)
             return None
