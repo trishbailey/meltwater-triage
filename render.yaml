@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: meltwater-triage
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 600
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_PASSWORD
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: REFINE_MODEL
+        value: claude-haiku-4-5
+      - key: HEAT_MAX_POSTS
+        value: "300"
+      # Posts sent to Claude per UTC month (review and heat each count). Unset means no monthly limit.
+      - key: ANTHROPIC_MONTHLY_POST_CAP
+        sync: false
+      # Add DATABASE_URL from a Render Postgres instance to keep month-to-month history
+      # and to enforce ANTHROPIC_MONTHLY_POST_CAP across deploys.
