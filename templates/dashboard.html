@@ -16,7 +16,7 @@
 <div id="dash-map" class="dash-map" role="img" aria-label="Map of sites and protest events"></div>
 <div class="legend" id="map-legend">{% for item in map.legend %}<span><i class="sw" style="background:{{ item.color }}"></i>{{ item.label }}</span>{% endfor %}
 <span class="note" id="map-count"></span></div>
-<p class="note">Map tiles © <a href="https://www.esri.com/" rel="noopener noreferrer" target="_blank">Esri</a>, © OpenStreetMap contributors, © CARTO.</p>
+<p class="note">Map tiles © <a href="https://www.esri.com/" rel="noopener noreferrer" target="_blank">Esri</a>; data © OpenStreetMap contributors, HERE, Garmin, FAO, NOAA, USGS.</p>
 </section>
 <script type="application/json" id="map-assets">{{ map.assets|tojson }}</script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
