@@ -308,6 +308,22 @@ def create_app() -> Flask:
             return Response("Alert not found.", 404)
         return redirect(url_for("dashboard") + "#early-warning")
 
+    @app.post("/api/purge-test-posts")
+    def purge_test_posts():
+        """One-shot cleanup for synthetic load-test rows (Document ID ends with -<n>)."""
+        expected = os.environ.get("ALERT_INGEST_TOKEN")
+        if not expected:
+            return {"error": "not configured"}, 503
+        auth = request.headers.get("Authorization", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        if not token or not hmac.compare_digest(token.encode("utf-8", "ignore"), expected.encode("utf-8")):
+            return {"error": "unauthorized"}, 401
+        st = _storage()
+        if st is None:
+            return {"error": "storage is not configured"}, 503
+        deleted = st.delete_test_posts()
+        return {"deleted": deleted}
+
     @app.post("/api/alerts")
     def ingest_alert():
         expected = os.environ.get("ALERT_INGEST_TOKEN")
