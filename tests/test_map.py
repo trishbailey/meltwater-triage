@@ -50,7 +50,23 @@ def client(tmp_path, monkeypatch):
 
 def test_dashboard_includes_map(client):
     html = client.get("/dashboard").get_data(as_text=True)
-    assert 'id="dash-map"' in html and "basemaps.cartocdn.com/dark_all" in html
+    assert 'id="dash-map"' in html and "World_Dark_Gray_Base" in html
     assert "leaflet" in html.lower() and "OpenStreetMap" in html
     data = client.get("/api/map?days=30").get_json()
     assert len(data["assets"]) == 16
+
+
+def test_web_source_color_distinct():
+    coloraide = pytest.importorskip("coloraide")
+    from triage import dashboard as dash
+    web = dash.SOURCE_COLORS["web"]
+    others = [c for k, c in dash.SOURCE_COLORS.items() if k != "web"] + list(dash.COLORS.values())
+    for o in others:
+        assert coloraide.Color(web).delta_e(o, method="2000") >= 20, o
+
+
+def test_esri_tiles_in_dashboard(client):
+    html = client.get("/dashboard").get_data(as_text=True)
+    assert "World_Dark_Gray_Base" in html
+    assert "basemaps.cartocdn.com" not in html
+    assert "Esri" in html

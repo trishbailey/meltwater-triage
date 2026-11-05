@@ -14,10 +14,12 @@ from .alerts import SIGNAL_LEVELS, SOURCES, normalize_url
 COLORS = {"threat": "#e8604c", "protest": "#c8a24a"}
 SOURCE_COLORS = {"x": "#5aa9ff", "bluesky": "#2fd6b5", "facebook": "#b48cff",
                  "instagram": "#ff6fae", "newsletter": "#8fd14f",
-                 "seerist": "#ffee00"}
+                 "seerist": "#ffee00",
+                 "web": "#0bdcfd"}
 SOURCE_LABELS = {"x": "X", "bluesky": "Bluesky", "facebook": "Facebook",
                  "instagram": "Instagram", "newsletter": "Newsletter",
-                 "seerist": "Seerist"}
+                 "seerist": "Seerist",
+                 "web": "Web"}
 # One-hue red ramp (lighter = less severe), most severe first.
 SIGNAL_COLORS = {"critical": "#ff4d3d", "high": "#e8705f", "medium": "#d99a8f", "low": "#f0c9c2"}
 THREAT_CATS = {"threat", "both"}
