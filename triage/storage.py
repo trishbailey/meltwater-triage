@@ -245,6 +245,36 @@ class Storage:
                                                        upload_week=week, upload_month=month, **values))
         return run_id
 
+
+    def reuse_index(self, text_cols: list | None = None) -> "ReuseIndex":
+        """Load prior classifications for skipping Claude on re-uploads and retweets."""
+        from .reuse import ReuseIndex, _payload_from_stored, _url_key, text_fingerprint, _row_text
+        index = ReuseIndex()
+        text_cols = text_cols or []
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(
+                posts.c.document_id, posts.c.category, posts.c.refined_category,
+                posts.c.severity, posts.c.threat_type, posts.c.heat_score, posts.c.heat_topic,
+                posts.c.link, posts.c.data)).all()
+        for doc, cat, refined, sev, tt, heat, topic, link, data in rows:
+            payload = _payload_from_stored(doc, cat, refined, sev, tt, heat, topic, data)
+            blob = dict(data) if isinstance(data, dict) else {}
+            if link:
+                payload.setdefault("link", link)
+                blob.setdefault("link", link)
+                blob.setdefault("url", link)
+            payload["_url_key"] = _url_key({**blob, **payload})
+            merged = {**blob, **payload}
+            if text_cols:
+                fp = text_fingerprint(_row_text(merged, text_cols))
+            else:
+                fp = text_fingerprint(str(
+                    blob.get("Hit Sentence") or blob.get("hit sentence")
+                    or blob.get("Content") or blob.get("content") or ""))
+            payload["_fp"] = fp
+            index.add(payload)
+        return index
+
     def posts_sent_this_month(self, now: datetime | None = None) -> int:
         month = _utc(now).strftime("%Y-%m")
         with self.engine.connect() as conn:

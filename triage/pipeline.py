@@ -16,6 +16,9 @@ from .filters import _file_label, _find_columns, combine_uploads, screen_datafra
 from .heat import analyze_heat
 from .refine import refine
 from .storage import persistence_enabled
+from . import reuse as reuse_mod
+from .reuse import ReuseIndex
+from .refine import REFINE_COLUMNS
 
 log = logging.getLogger(__name__)
 
@@ -79,15 +82,40 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
                 counter["done"] += n
                 report(stage, min(counter["done"], n_total), n_total)
         return _add
+
+    # Skip Claude for posts already in the database (doc id / URL / text fingerprint)
+    # and for retweets of the same wording later in this file.
+    index = ReuseIndex()
+    if storage is not None and not storage_failed:
+        try:
+            index = storage.reuse_index(text_cols)
+        except Exception as exc:
+            log.warning("Could not load reuse index: %s", type(exc).__name__)
+
+    refine_need, refine_reused, refine_skipped = reuse_mod.split_for_claude(
+        flagged, text_cols, index, kind="refine")
+    refine_need, refine_deferred = _collapse_same_text(refine_need, text_cols)
     counter["done"] = 0
-    report("Reviewing flagged posts", 0, len(flagged))
-    flagged = refine(flagged, text_cols, complete=refine_fn, budget=budget,
-                     progress=tick("Reviewing flagged posts", len(flagged)))
+    report("Reviewing flagged posts", 0, len(refine_need))
+    refined_new = refine(refine_need, text_cols, complete=refine_fn, budget=budget,
+                         progress=tick("Reviewing flagged posts", len(refine_need)))
+    reuse_mod.remember_batch(index, refined_new, text_cols, kind="refine")
+    refined_deferred = _fill_deferred(refine_deferred, refined_new, text_cols, kind="refine")
+    flagged = _combine_parts(flagged, [refined_new, refine_reused, refined_deferred], REFINE_COLUMNS)
+
     heat_total = min(total, _heat_cap())
+    heat_need, heat_reused, heat_skipped = reuse_mod.split_for_claude(
+        screened, text_cols, index, kind="heat")
+    # Only score posts that still need heat, respecting HEAT_MAX_POSTS on the need set.
     counter["done"] = 0
-    report("Scoring language", 0, heat_total)
-    screened = analyze_heat(screened, text_cols, complete=heat_fn, budget=budget,
-                            progress=tick("Scoring language", heat_total))
+    report("Scoring language", 0, min(len(heat_need), heat_total))
+    heated_new = analyze_heat(heat_need, text_cols, complete=heat_fn, budget=budget,
+                              max_posts=heat_total,
+                              progress=tick("Scoring language", min(len(heat_need), heat_total)))
+    reuse_mod.remember_batch(index, heated_new, text_cols, kind="heat")
+    screened = _combine_parts(screened, [heated_new, heat_reused],
+                              ["heat_score", "heat_topic", "heat_subtopic", "heated_phrases", "heat_sampled"])
+
     report("Saving for the dashboard", total, total)
     heat_cols = [c for c in ("heat_score", "heat_topic", "heat_subtopic", "heated_phrases", "heat_sampled")
                  if c in screened.columns]
@@ -98,6 +126,12 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
     flagged = _drop_row_id(flagged).reset_index(drop=True)
     res = Result(flagged=flagged, all_posts=screened,
                  posters=recurring_threat_posters(flagged), topics=heat_by_topic(screened))
+    if refine_skipped or heat_skipped:
+        res.notes.append(
+            f"Skipped Claude for {refine_skipped} already-classified flagged post"
+            f"{'' if refine_skipped == 1 else 's'}"
+            f" and {heat_skipped} already heat-scored post"
+            f"{'' if heat_skipped == 1 else 's'} (matched by document id, URL, or same text).")
     note = budget.warning()
     if note:
         res.notes.append(note)
@@ -112,6 +146,63 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
             log.error("Saving run failed: %s", type(exc).__name__)
             res.notes.append("Results were not saved to the database.")
     return res
+
+
+def _collapse_same_text(df: pd.DataFrame, text_cols: list) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Keep one row per text fingerprint for Claude; defer the rest to copy after."""
+    if df is None or df.empty:
+        empty = df.copy() if df is not None else pd.DataFrame()
+        return empty, empty
+    keep, defer, seen = [], [], set()
+    for i, row in df.iterrows():
+        _doc, _url, fp = reuse_mod.row_keys(row.to_dict(), text_cols)
+        if fp and fp in seen:
+            defer.append(i)
+        else:
+            if fp:
+                seen.add(fp)
+            keep.append(i)
+    return df.loc[keep].copy(), df.loc[defer].copy()
+
+
+def _fill_deferred(deferred: pd.DataFrame, classified: pd.DataFrame, text_cols: list, *, kind: str) -> pd.DataFrame:
+    if deferred is None or deferred.empty:
+        return deferred.copy() if deferred is not None else pd.DataFrame()
+    cols = (REFINE_COLUMNS if kind == "refine" else
+            ["heat_score", "heat_topic", "heat_subtopic", "heated_phrases", "heat_sampled"])
+    by_fp = {}
+    for _, row in classified.iterrows():
+        _d, _u, fp = reuse_mod.row_keys(row.to_dict(), text_cols)
+        if fp:
+            by_fp[fp] = row.to_dict()
+    out = []
+    for _, row in deferred.iterrows():
+        rec = row.to_dict()
+        _d, _u, fp = reuse_mod.row_keys(rec, text_cols)
+        src = by_fp.get(fp)
+        if src:
+            reuse_mod.apply_fields(rec, src, cols)
+            if kind == "heat":
+                rec["heat_sampled"] = True
+        out.append(rec)
+    return pd.DataFrame(out) if out else deferred.iloc[0:0].copy()
+
+
+def _combine_parts(original: pd.DataFrame, parts: list[pd.DataFrame], columns: list[str]) -> pd.DataFrame:
+    """Merge Claude/reuse columns back onto the original row order via _ROW_ID."""
+    out = original.copy()
+    for col in columns:
+        if col not in out.columns:
+            out[col] = pd.NA if col != "heat_sampled" else False
+    frames = [p for p in parts if p is not None and not p.empty and _ROW_ID in getattr(p, "columns", [])]
+    if not frames:
+        return out
+    merged = pd.concat(frames, ignore_index=True, sort=False)
+    # Last write wins; prefer non-null.
+    merged = merged.drop_duplicates(subset=[_ROW_ID], keep="last")
+    out = out.drop(columns=[c for c in columns if c in out.columns], errors="ignore")
+    cols = [_ROW_ID] + [c for c in columns if c in merged.columns]
+    return out.merge(merged[cols], on=_ROW_ID, how="left")
 
 
 def to_workbook(res: Result) -> bytes:
