@@ -41,7 +41,8 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
         from .storage import Storage
         storage = Storage()
     if storage is not None:
-        res.run_id = storage.save_run(flagged, [n for n, _ in files], len(df))
+        from .storage import rows_to_store
+        res.run_id = storage.save_run(rows_to_store(screened, flagged), [n for n, _ in files], len(df))
     return res
 
 

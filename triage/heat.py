@@ -2,7 +2,7 @@
 
 Runs only when ANTHROPIC_API_KEY is set (HEAT_DISABLED=1 turns it off).
 Cost is bounded by HEAT_MAX_POSTS (default 300): when there are more posts,
-a reproducible random sample of that size is scored. Batch size: HEAT_BATCH_SIZE
+the highest-engagement posts are scored first (ties keep file order). Batch size: HEAT_BATCH_SIZE
 (default 25). Model: REFINE_MODEL (shared with the review stage).
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ def is_enabled() -> bool:
 
 
 def analyze_heat(df: pd.DataFrame, text_cols: list, complete=None, max_posts: int | None = None,
-                 batch_size: int | None = None, seed: int = 42) -> pd.DataFrame:
+                 batch_size: int | None = None) -> pd.DataFrame:
     """Return df with heat columns plus heat_sampled (True where scored)."""
     if complete is None:
         if not is_enabled():
@@ -45,7 +45,10 @@ def analyze_heat(df: pd.DataFrame, text_cols: list, complete=None, max_posts: in
     out = df.reset_index(drop=True).copy()
     idx = list(out.index)
     if len(idx) > max_posts:
-        idx = sorted(out.sample(n=max_posts, random_state=seed).index)
+        eng_col = next((c for c in out.columns if str(c).strip().lower() == "engagement"), None)
+        eng = (pd.to_numeric(out[eng_col], errors="coerce").fillna(0) if eng_col
+               else pd.Series(0, index=out.index))
+        idx = sorted(eng.sort_values(ascending=False, kind="stable").index[:max_posts])
     results: dict[int, dict] = {}
     for start in range(0, len(idx), batch_size):
         chunk = idx[start:start + batch_size]

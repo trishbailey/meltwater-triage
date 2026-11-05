@@ -8,7 +8,7 @@ from triage.filters import Patterns, screen_text
 from triage.heat import analyze_heat
 from triage.pipeline import process, to_workbook
 from triage.refine import refine
-from triage.storage import Storage
+from triage.storage import Storage, rows_to_store
 
 P = Patterns()
 
@@ -97,6 +97,20 @@ def test_heat_cap_and_batches(monkeypatch):
     assert {"total_heat", "total_engagement"} <= set(topics.columns)
 
 
+def test_heat_cap_prefers_engagement():
+    df = pd.DataFrame({"Hit Sentence": list("abcde"), "Engagement": [5, None, 50, "x", 20]})
+    seen = []
+
+    def fake(system, user):
+        posts = json.loads(user)["posts"]
+        seen.extend(p["text"] for p in posts)
+        return json.dumps({"results": [{"id": p["id"], "heat_score": 1, "topic": "t"} for p in posts]})
+
+    out = analyze_heat(df, ["Hit Sentence"], complete=fake, max_posts=2)
+    assert sorted(seen) == ["c", "e"]
+    assert out["heat_sampled"].tolist() == [False, False, True, False, True]
+
+
 def test_heat_score_clamped():
     df = pd.DataFrame({"Hit Sentence": ["a"]})
     out = analyze_heat(df, ["Hit Sentence"], complete=lambda s, u: json.dumps(
@@ -111,21 +125,51 @@ def _flagged(ids, cat="threat"):
                          "category": [cat] * len(ids), "link": ["https://e.x"] * len(ids)})
 
 
-def test_storage_dedupe_and_monthly(tmp_path):
+def test_storage_dedupe_and_monthly_by_post_date(tmp_path):
     st = Storage(f"sqlite:///{tmp_path/'t.db'}")
-    st.save_run(_flagged(['"d1"', "d2"]), ["oct.xlsx"], 10, now=datetime(2026, 10, 28, tzinfo=timezone.utc))
-    st.save_run(_flagged(["d2", "d3"], "protest"), ["nov.xlsx"], 8, now=datetime(2026, 11, 4, tzinfo=timezone.utc))
+    oct_rows = _flagged(['"d1"', "d2"]).assign(Date=["2026-09-30", "2026-10-02"], is_flagged=True)
+    st.save_run(oct_rows, ["a.xlsx"], 10, now=datetime(2026, 10, 28, tzinfo=timezone.utc))
+    nov_rows = _flagged(["d2", "d3"], "protest").assign(Date=["2026-10-02", "2026-11-03"], is_flagged=True)
+    st.save_run(nov_rows, ["b.xlsx"], 8, now=datetime(2026, 11, 4, tzinfo=timezone.utc))
     posts = st.load_posts()
-    assert len(posts) == 3  # d2 deduped (quotes stripped from d1 too)
+    assert len(posts) == 3  # d2 deduped; quotes stripped from d1
     d2 = posts[posts["Document ID"] == "d2"].iloc[0]
-    assert d2["upload_month"] == "2026-10" and d2["category"] == "protest"
+    assert d2["post_month"] == "2026-10" and d2["upload_month"] == "2026-10"
+    assert d2["category"] == "protest"
+    d1 = posts[posts["Document ID"] == '"d1"'].iloc[0]
+    assert d1["post_month"] == "2026-09" and d1["post_week"] == "2026-W40"
     m = st.monthly_counts()
     assert m.to_dict("records") == [
+        {"month": "2026-09", "category": "threat", "posts": 1, "engagement": 5.0},
         {"month": "2026-10", "category": "protest", "posts": 1, "engagement": 5.0},
-        {"month": "2026-10", "category": "threat", "posts": 1, "engagement": 5.0},
         {"month": "2026-11", "category": "protest", "posts": 1, "engagement": 5.0},
     ]
     assert set(st.load_posts("2026-11")["Document ID"]) == {"d3"}
+
+
+def test_storage_keeps_heat_posts_and_prior_signal(tmp_path):
+    st = Storage(f"sqlite:///{tmp_path/'h.db'}")
+    all_posts = pd.DataFrame({"Document ID": ["f", "h1", "h2", "x"],
+                              "Date": ["2026-10-01", "2026-10-03", "2026-11-01", "2026-11-02"],
+                              "Engagement": [1, 2, 3, 4],
+                              "category": ["threat", "", "", ""],
+                              "heat_score": [9, 4, 6, None], "heat_topic": ["costs", "costs", "jobs", None],
+                              "heat_sampled": [True, True, True, False]})
+    flagged = all_posts[all_posts["category"] != ""].assign(severity="high")
+    st.save_run(rows_to_store(all_posts, flagged), ["w1.xlsx"], 4)
+    stored = st.load_posts()
+    assert set(stored["Document ID"]) == {"f", "h1", "h2"}  # unscored, unflagged "x" not kept
+    assert stored.set_index("Document ID")["is_flagged"].to_dict() == {"f": True, "h1": False, "h2": False}
+    heat = st.monthly_heat()
+    oct_costs = heat[(heat.month == "2026-10") & (heat.topic == "costs")].iloc[0]
+    assert oct_costs["posts"] == 2 and oct_costs["avg_heat"] == 6.5
+    # Re-upload "f" without heat or flag: earlier flag, severity and score survive.
+    again = pd.DataFrame({"Document ID": ["f"], "Date": ["2026-10-01"], "category": [""],
+                          "heat_score": [None], "is_flagged": [False]})
+    st.save_run(again, ["w2.xlsx"], 1)
+    f = st.load_posts(flagged_only=True)
+    assert list(f["Document ID"]) == ["f"] and f.iloc[0]["severity"] == "high"
+    assert f.iloc[0]["heat_score"] == 9
 
 
 def test_pipeline_end_to_end(tmp_path, monkeypatch):
@@ -144,4 +188,5 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch):
     assert res.all_posts["heat_sampled"].all()  # heat covers all posts, not just hits
     sheets = pd.ExcelFile(io.BytesIO(to_workbook(res))).sheet_names
     assert sheets == ["Flagged", "Recurring threat posters", "Heat by topic", "Heat (all posts)"]
-    assert len(st.load_posts()) == 2
+    assert len(st.load_posts()) == 3  # 2 flagged + 1 heat-scored
+    assert len(st.load_posts(flagged_only=True)) == 2

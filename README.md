@@ -42,7 +42,7 @@ Protest fields from the review: `protest_location`, `protest_topic`, `organizers
 ## Heated-language analysis
 Covers all screened posts, not just keyword hits. Each scored post gets `heat_score` (0-10),
 `heat_topic`, `heated_phrases`, `heat_sampled`. Cost is capped by `HEAT_MAX_POSTS`
-(default 300; a reproducible random sample is scored above that) and batched by
+(default 300; above that the highest-engagement posts are scored first) and batched by
 `HEAT_BATCH_SIZE` (default 25). `HEAT_DISABLED=1` turns it off; it is skipped without
 `ANTHROPIC_API_KEY`.
 
@@ -52,8 +52,8 @@ engagement, first/last seen; 2+ threat posts), and, when heat ran, `Heat by topi
 by average then total heat, with engagement) and `Heat (all posts)`.
 
 ## Storage
-`triage/storage.py` (SQLAlchemy) stores each upload run and its flagged posts, deduped by
-Document ID, with upload week and month for month-over-month comparisons. Enabled when
+`triage/storage.py` (SQLAlchemy) stores each upload run and every flagged or heat-scored post, deduped by
+Document ID. Reporting periods use the post date (`post_week`, `post_month` from Meltwater Date), with upload week/month kept as secondary fields. Helpers: `monthly_counts`, `monthly_heat`, `load_posts`. Enabled when
 `DATABASE_URL` is set (Postgres) or `PERSIST_RUNS=1` (local SQLite at
 `STORAGE_SQLITE_PATH`, default `data/triage.db`). Render's free filesystem is temporary,
 so lasting storage needs a Render Postgres database.
