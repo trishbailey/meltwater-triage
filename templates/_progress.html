@@ -5,7 +5,7 @@ function ensureUi(form){
   var box=form.parentNode.querySelector(".progress");
   if(box)return box.parentNode; // return wrapper? we'll create siblings after form
   var wrap=document.createElement("div");
-  wrap.innerHTML='<div class="progress" hidden aria-live="polite"><p class="okmsg paccept" hidden></p><p class="pstage">Uploading…</p><div class="ptrack" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="pfill"></div></div><p class="note pcount"></p></div><p class="okmsg presult" role="status" hidden></p><p class="err perror" role="alert" hidden></p>';
+  wrap.innerHTML='<div class="upload-status"><div class="progress" hidden aria-live="polite"><p class="okmsg paccept" hidden></p><p class="pstage">Uploading…</p><div class="ptrack" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="pfill"></div></div><p class="note pcount"></p></div><p class="okmsg presult" role="status" hidden></p><p class="err perror" role="alert" hidden></p><p><button type="button" class="btn pclose" hidden>Close</button></p></div>';
   form.parentNode.insertBefore(wrap, form.nextSibling);
   return wrap;
 }
@@ -15,10 +15,12 @@ function bind(form){
   var box=wrap.querySelector(".progress"), stage=wrap.querySelector(".pstage"), bar=wrap.querySelector(".ptrack"),
   fill=wrap.querySelector(".pfill"), count=wrap.querySelector(".pcount"), okEl=wrap.querySelector(".presult"),
   errEl=wrap.querySelector(".perror"), accept=wrap.querySelector(".paccept"),
-  btn=form.querySelector("button[type=submit]"), key="mtJob:"+(form.getAttribute("action")||"");
+  btn=form.querySelector("button[type=submit]"), closeBtn=wrap.querySelector(".pclose"), key="mtJob:"+(form.getAttribute("action")||"");
   function set(pct,label,detail,busy){pct=Math.max(0,Math.min(100,pct|0));fill.style.width=pct+"%";bar.setAttribute("aria-valuenow",Math.round(pct));
   fill.classList.toggle("busy",!!busy);stage.textContent=label;count.textContent=detail||"";}
-  function finish(){btn.disabled=false;btn.textContent=btn.dataset.label;try{sessionStorage.removeItem(key);}catch(e){}}
+  function finish(){btn.disabled=false;btn.textContent=btn.dataset.label;try{sessionStorage.removeItem(key);}catch(e){} if(closeBtn) closeBtn.hidden=false;}
+  function dismiss(){box.hidden=true;okEl.hidden=true;errEl.hidden=true;accept.hidden=true;if(closeBtn)closeBtn.hidden=true;}
+  if(closeBtn) closeBtn.addEventListener("click", dismiss);
   function fail(msg){box.hidden=false;errEl.textContent=msg;errEl.hidden=false;finish();}
   function accepted(j){var names=j.filenames||"";var rows=j.rows||0;var t="File accepted";
   if(names)t+=": "+names;if(rows)t+=" ("+Number(rows).toLocaleString()+" rows)";accept.textContent=t;accept.hidden=false;}

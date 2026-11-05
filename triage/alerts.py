@@ -8,6 +8,46 @@ SOURCES = ("x", "bluesky", "facebook", "instagram", "newsletter", "seerist", "we
 SIGNAL_LEVELS = ("critical", "high", "medium", "low")  # most to least severe
 MAX_TEXT = 5000
 
+import re
+
+_WEEKDAY = r"\b(?:mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?:day)?\b"
+_MONTH = r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b"
+_DATE_PAT = re.compile(
+    rf"(?:{_WEEKDAY})|(?:{_MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s*\d{{4}})?)|"
+    rf"(?:\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTH}(?:\s+\d{{4}})?)|"
+    rf"\b\d{{4}}-\d{{2}}-\d{{2}}\b|"
+    rf"\bthis\s+(?:saturday|sunday|weekend|week|monday|tuesday|wednesday|thursday|friday)\b|"
+    rf"\btomorrow\b|\btonight\b",
+    re.I,
+)
+_PLACE_PAT = re.compile(
+    r"\b(?:gardens?|park|square|court|street|st\.?|road|rd\.?|harbour|harbor|wharf|bridge|"
+    r"town hall|parliament|embassy|consulate|base|shipyard|cathedral|university|campus|"
+    r"sydney|melbourne|brisbane|perth|adelaide|canberra|hobart|darwin|newcastle|fremantle|"
+    r"rockingham|henderson|osborne|stirling|majura|russell|belconnen|kings\s*park|"
+    r"supreme\s+court|federation\s+square|hyde\s+park)\b",
+    re.I,
+)
+
+
+def looks_like_scheduled_event(text: str, matched_terms=None) -> bool:
+    """True when the text names a date or weekday and a place (planned activity)."""
+    blob = " ".join([text or "", " ".join(matched_terms or [])])
+    return bool(_DATE_PAT.search(blob) and _PLACE_PAT.search(blob))
+
+
+def score_signal(text: str, matched_terms=None, suggested: str | None = None) -> str:
+    """Return a signal level. Date+place bumps the floor to high (does not lower critical)."""
+    order = {lvl: i for i, lvl in enumerate(SIGNAL_LEVELS)}  # lower = more severe
+    level = (suggested or "low").lower()
+    if level not in order:
+        level = "low"
+    if looks_like_scheduled_event(text, matched_terms):
+        if order[level] > order["high"]:
+            level = "high"
+    return level
+
+
 
 _HOST_ALIASES = {"twitter.com": "x.com", "mobile.twitter.com": "x.com", "m.facebook.com": "facebook.com",
                  "bsky.app": "bsky.app"}
@@ -72,6 +112,8 @@ def parse_alert(payload) -> dict:
             raise AlertError("'posted_at' must be an ISO 8601 timestamp") from exc
         if posted_at.tzinfo is None:
             posted_at = posted_at.replace(tzinfo=timezone.utc)
+    text = _str(payload, "text", MAX_TEXT)
+    level = score_signal(text or "", terms, suggested=level)
     return {"source": source, "url": url, "author": _str(payload, "author", 300),
-            "text": _str(payload, "text", MAX_TEXT), "posted_at": posted_at,
+            "text": text, "posted_at": posted_at,
             "matched_terms": "; ".join(terms), "signal_level": level}

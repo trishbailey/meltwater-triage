@@ -11,11 +11,11 @@ import pandas as pd
 from .aggregate import recurring_threat_posters
 from .alerts import SIGNAL_LEVELS, SOURCES, normalize_url
 
-COLORS = {"threat": "#e8604c", "protest": "#c8a24a"}
+COLORS = {"threat": "#c92f24", "protest": "#c8a24a"}
 SOURCE_COLORS = {"x": "#5aa9ff", "bluesky": "#2fd6b5", "facebook": "#b48cff",
                  "instagram": "#ff6fae", "newsletter": "#8fd14f",
                  "seerist": "#ffee00",
-                 "web": "#0bdcfd"}
+                 "web": "#fd6b00"}
 SOURCE_LABELS = {"x": "X", "bluesky": "Bluesky", "facebook": "Facebook",
                  "instagram": "Instagram", "newsletter": "Newsletter",
                  "seerist": "Seerist",
@@ -79,6 +79,7 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
     ctx: dict = {"colors": COLORS, "source_colors": SOURCE_COLORS, "source_labels": SOURCE_LABELS,
                  "signal_colors": SIGNAL_COLORS, "has_data": not posts.empty}
     ctx["alerts"] = build_alerts(alerts, meltwater_seen or {})
+    ctx.setdefault("threat_chart", {"rows": []})
     from . import geo
     ctx["map"] = {"assets": geo.asset_markers(), "days": map_days,
                  "colors": {"asset": geo.ASSET_COLOR, "event": geo.EVENT_COLOR,
@@ -150,6 +151,7 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
     else:
         ctx["threat_types"] = []
     ctx["targets"] = _split_counts(t.get("targets", pd.Series(dtype=object)), t["eng"])
+    ctx["threat_chart"] = build_threat_chart(t)
     ctx["people"] = _split_counts(m[m["is_threat"] | m["is_protest"]].get("named_individuals", pd.Series(dtype=object)), m["eng"])
 
     posters = recurring_threat_posters(t, min_count=2) if not t.empty else pd.DataFrame()
@@ -242,6 +244,41 @@ def _aware(v):
     if pd.isna(ts):
         return None
     return ts.tz_localize("UTC") if ts.tzinfo is None else ts
+
+
+
+def build_threat_chart(df: pd.DataFrame) -> dict:
+    """Threat posts by target with type, for the dashboard graphic under the map."""
+    if df is None or df.empty:
+        return {"rows": []}
+    rows = []
+    eng = _num(df[_col(df, "engagement")]) if _col(df, "engagement") else pd.Series(0, index=df.index)
+    for i, r in df.iterrows():
+        cat = str(r.get("category") or "")
+        refined = str(r.get("refined_category") or "")
+        if cat not in THREAT_CATS and refined not in THREAT_CATS:
+            continue
+        targets = [t.strip() for t in str(r.get("targets") or "").split(";") if t.strip()]
+        ttype = str(r.get("threat_type") or "unspecified").strip() or "unspecified"
+        if not targets:
+            targets = ["Unspecified target"]
+        for t in targets[:2]:
+            rows.append({"label": t, "type": ttype, "engagement": float(eng.get(i, 0)), "value": 1})
+    if not rows:
+        return {"rows": []}
+    # aggregate
+    bag: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r["label"].lower(), r["type"].lower())
+        rec = bag.setdefault(key, {"label": r["label"], "type": r["type"], "value": 0, "engagement": 0.0})
+        rec["value"] += 1
+        rec["engagement"] += r["engagement"]
+    items = sorted(bag.values(), key=lambda x: (x["value"], x["engagement"]), reverse=True)[:12]
+    top = max(it["value"] for it in items) or 1
+    for it in items:
+        it["pct"] = round(100 * it["value"] / top, 1)
+        it["engagement"] = int(it["engagement"])
+    return {"rows": items}
 
 
 def build_alerts(alerts: pd.DataFrame | None, meltwater_seen: dict) -> dict:

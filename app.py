@@ -27,7 +27,6 @@ from triage import dashboard as dash
 from triage.alerts import AlertError, parse_alert
 from triage.storage import Storage, persistence_enabled
 from triage import jobs
-from triage.seerist import SeeristError, item_key, parse_pdf, to_alert
 
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "50"))
 
@@ -125,6 +124,18 @@ def create_app() -> Flask:
     # Render terminates TLS at one proxy hop; trust its X-Forwarded-For/Proto.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
+    @app.context_processor
+    def _inject_downloads():
+        try:
+            return {"recent_downloads": jobs.list_recent_downloads()}
+        except Exception:
+            return {"recent_downloads": []}
+
+    try:
+        jobs.reclaim_orphans_on_boot()
+    except Exception:
+        pass
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         return redirect(_safe_next(request.values.get("next")))
@@ -200,6 +211,14 @@ def create_app() -> Flask:
         return send_file(io.BytesIO(payload), as_attachment=True, download_name=name,
                          mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+
+    def _storage():
+        if not persistence_enabled():
+            return None
+        if "storage" not in app.extensions:
+            app.extensions["storage"] = Storage()
+        return app.extensions["storage"]
+
     @app.get("/jobs/<jid>")
     @require_password
     def job_status(jid: str):
@@ -216,65 +235,7 @@ def create_app() -> Flask:
             return Response("Download not available. It may have expired.", 404)
         return _xlsx(data)
 
-    @app.get("/seerist")
-    @require_password
-    def seerist_page():
-        return render_template("seerist.html", error=None, message=None)
 
-    def _import_seerist(data: bytes, progress) -> dict:
-        st = _storage()
-        if st is None:
-            raise ValueError("Storage is not configured, so Seerist items cannot be saved.")
-        progress("Reading the PDF", 0, 0)
-        try:
-            items = parse_pdf(data)
-        except SeeristError as exc:
-            raise ValueError(str(exc)) from exc
-        if not items:
-            raise ValueError("No Seerist items were found in that PDF.")
-        added = skipped = 0
-        for n, item in enumerate(items, 1):
-            _, created = st.add_alert(to_alert(item), url_key=item_key(item))
-            added, skipped = added + created, skipped + (not created)
-            progress("Saving items", n, len(items))
-        msg = (f"Added {added} item{'s' if added != 1 else ''}, skipped {skipped} "
-               f"duplicate{'s' if skipped != 1 else ''}.")
-        return {"message": msg, "added": added, "skipped": skipped, "items": len(items)}
-
-    @app.post("/seerist/upload")
-    @require_password
-    def seerist_upload():
-        wants_job = request.headers.get("X-Upload-Mode") == "job"
-
-        def fail(msg, code):
-            if wants_job:
-                return {"error": msg}, code
-            return render_template("seerist.html", error=msg, message=None), code
-        if not _same_origin_upload():
-            return fail("Upload blocked: submit the form from this site.", 403)
-        f = request.files.get("file")
-        if not f or not f.filename:
-            return fail("Please choose a Seerist PDF export.", 400)
-        data = f.read()
-        if not data.startswith(b"%PDF"):
-            return fail("That file is not a PDF. Upload a Seerist PDF export.", 400)
-        if wants_job:
-            name = f.filename
-            jid = jobs.start("seerist", lambda progress: _import_seerist(data, progress),
-                             filenames=name, rows=0)
-            return {"job": jid, "filenames": name, "rows": 0}, 202
-        try:
-            res = _import_seerist(data, lambda *a: None)
-        except ValueError as exc:
-            return fail(str(exc), 400)
-        return render_template("seerist.html", error=None, message=res["message"])
-
-    def _storage():
-        if not persistence_enabled():
-            return None
-        if "storage" not in app.extensions:
-            app.extensions["storage"] = Storage()
-        return app.extensions["storage"]
 
     @app.get("/status")
     @require_password
