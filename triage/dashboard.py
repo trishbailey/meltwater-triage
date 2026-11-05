@@ -175,6 +175,10 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
     return ctx
 
 
+def _n(k, word):
+    return f"{k} {word}" if k == 1 else f"{k} {word}s"
+
+
 def _change(cur, prev, noun):
     if prev is None:
         return f"{cur} {noun}"
@@ -190,7 +194,7 @@ def _summaries(ctx, s, sp) -> list[dict]:
         f"Keyword screening flagged {_change(s['threats'], sp['threats'] if sp else None, 'posts with threat language')}. "
         f"Review confirmed {s['confirmed_threats']} of them as genuine threats."
         + (f" The leading threat type by engagement is {ctx['threat_types'][0]['label'].lower()}." if ctx.get("threat_types") else "")
-        + (f" {len(ctx['posters'])} accounts posted threat language more than once." if ctx.get("posters") else
+        + (f" {_n(len(ctx['posters']), 'account')} posted threat language more than once." if ctx.get("posters") else
            " No account posted threat language more than once."))})
     out.append({"title": "Protests", "text": (
         f"Screening flagged {_change(s['protests'], sp['protests'] if sp else None, 'posts with protest or mobilization language')}. "
@@ -200,12 +204,12 @@ def _summaries(ctx, s, sp) -> list[dict]:
     if ctx.get("heat"):
         h = ctx["heat"][0]
         out.append({"title": "Heated language", "text": (
-            f"Across {s['heat_posts']} scored posts, the average heat is {s['avg_heat']} on a 0 to 10 scale. "
-            f"The most heated topic is {h['label'].lower()}, with an average of {h['avg']} across {h['posts']} posts.")})
+            f"Across {_n(s['heat_posts'], 'scored post')}, the average heat is {s['avg_heat']} on a 0 to 10 scale. "
+            f"The most heated topic is {h['label'].lower()}, with an average of {h['avg']} across {_n(h['posts'], 'post')}.")})
     a = ctx.get("alerts") or {}
     if a.get("items"):
         out.append({"title": "Early warning", "text": (
-            f"{a['total']} early-warning alerts arrived from monitored channels; {a['confirmed']} later appeared in Meltwater"
+            f"{_n(a['total'], 'early-warning alert')} arrived from monitored channels; {a['confirmed']} later appeared in Meltwater"
             + (f", a median {a['median_lead']} ahead." if a.get("median_lead") else "."))})
     return out
 
@@ -213,7 +217,7 @@ def _summaries(ctx, s, sp) -> list[dict]:
 def _fmt_lead(seconds: float) -> str:
     hours = seconds / 3600
     if hours < 1:
-        return f"{max(1, round(seconds / 60))} minutes"
+        return _n(max(1, round(seconds / 60)), "minute")
     if hours < 48:
         return f"{round(hours, 1)} hours"
     return f"{round(hours / 24, 1)} days"

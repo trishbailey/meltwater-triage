@@ -1,7 +1,7 @@
 {% extends "_base.html" %}{% block title %}Threat and Protest Monitor{% endblock %}{% block body %}
 {% macro bars(items, color, unit="posts") %}<div class="bars">{% for it in items %}
 <div class="bar"><div class="lab">{{ it.label }}</div><div class="track" style="display:flex;align-items:center">
-<div class="fill" style="width:{{ it.pct }}%;background:{{ it.color or color }}"></div><span class="val">{{ "{:,}".format(it.value) }} {{ unit }}</span></div></div>
+<div class="fill" style="width:{{ it.pct }}%;background:{{ it.color or color }}"></div><span class="val">{{ "{:,}".format(it.value) }} {{ unit if it.value != 1 else unit[:-1] }}</span></div></div>
 {% endfor %}</div>{% endmacro %}
 <h1>Threat and Protest Monitor</h1>
 <p class="intro">Monthly view of threatening language and protest activity in monitored media coverage of the Australia, United Kingdom and United States security partnership (AUKUS) and related defense programs.</p>
@@ -50,7 +50,7 @@
 </div>
 
 <section class="panel" id="heat"><h2>Most heated topics</h2>
-{% if heat %}<div class="bars">{% for h in heat %}<div class="bar"><div class="lab">{{ h.label }}</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ h.pct }}%;background:{{ colors.threat }}"></div><span class="val">{{ h.avg }} of 10, {{ h.posts }} posts</span></div></div>{% endfor %}</div>
+{% if heat %}<div class="bars">{% for h in heat %}<div class="bar"><div class="lab">{{ h.label }}</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ h.pct }}%;background:{{ colors.threat }}"></div><span class="val">{{ h.avg }} of 10, {{ h.posts }} post{{ "s" if h.posts != 1 }}</span></div></div>{% endfor %}</div>
 <p class="how">Average heat score from 0 (calm) to 10 (most heated) across scored posts; bar length is out of 10.</p>{% else %}<p>No heat-scored posts this month.</p>{% endif %}</section>
 {% endif %}
 
@@ -58,7 +58,7 @@
 <p class="how">A separate layer of alerts from X, Bluesky, Facebook, Instagram and newsletters. These alerts are not counted in any Meltwater total above.</p>
 {% if alerts.items %}
 <p class="finding">{{ alerts.total }} alerts; {{ alerts.confirmed }} later confirmed in Meltwater{% if alerts.median_lead %}, a median {{ alerts.median_lead }} earlier{% endif %}.</p>
-<div class="bars">{% for b in alerts.by_source %}<div class="bar"><div class="lab">{{ b.label }}</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ b.pct }}%;background:{{ b.color }}"></div><span class="val">{{ b.value }} alerts</span></div></div>{% endfor %}</div>
+<div class="bars">{% for b in alerts.by_source %}<div class="bar"><div class="lab">{{ b.label }}</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ b.pct }}%;background:{{ b.color }}"></div><span class="val">{{ b.value }} alert{{ "s" if b.value != 1 }}</span></div></div>{% endfor %}</div>
 {% for a in alerts['items'] %}<details><summary><span class="chip" style="background:{{ signal_colors[a.signal_level] }}">{{ a.signal_level|capitalize }}</span>
 <span class="chip" style="background:{{ source_colors[a.source] }}">{{ source_labels[a.source] }}</span>
 {{ a.author or "Unknown author" }}{% if a.confirmed %} <span class="ok">Confirmed in Meltwater{% if a.lead %}, {{ a.lead }} earlier{% endif %}</span>{% endif %}</summary>
