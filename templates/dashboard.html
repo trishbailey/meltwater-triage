@@ -57,7 +57,7 @@
 <section class="panel" id="early-warning"><h2>Early warning from monitored channels</h2>
 <p class="how">A separate layer of alerts from X, Bluesky, Facebook, Instagram and newsletters. These alerts are not counted in any Meltwater total above.</p>
 {% if alerts.items %}
-<p class="finding">{{ alerts.total }} alerts; {{ alerts.confirmed }} later confirmed in Meltwater{% if alerts.median_lead %}, a median {{ alerts.median_lead }} earlier{% endif %}.</p>
+<p class="finding">{{ alerts.total }} alert{{ "s" if alerts.total != 1 }}; {{ alerts.confirmed }} later confirmed in Meltwater{% if alerts.median_lead %}, a median {{ alerts.median_lead }} earlier{% endif %}.</p>
 <div class="bars">{% for b in alerts.by_source %}<div class="bar"><div class="lab">{{ b.label }}</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ b.pct }}%;background:{{ b.color }}"></div><span class="val">{{ b.value }} alert{{ "s" if b.value != 1 }}</span></div></div>{% endfor %}</div>
 {% for a in alerts['items'] %}<details><summary><span class="chip" style="background:{{ signal_colors[a.signal_level] }}">{{ a.signal_level|capitalize }}</span>
 <span class="chip" style="background:{{ source_colors[a.source] }}">{{ source_labels[a.source] }}</span>
