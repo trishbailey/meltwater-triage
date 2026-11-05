@@ -76,6 +76,19 @@ Uploads are limited by `MAX_UPLOAD_MB` (default 50), `MAX_UNCOMPRESSED_MB` (defa
 xlsx zip expansion), and `MAX_SCREEN_ROWS` (default 100000). Document IDs are read as
 text so a blank cell does not turn `12345` into `12345.0`.
 
+## Status, dashboard and alerts
+
+- `/status` (password): stored rows by post month and flag type, upload runs, alert count, and posts sent for review this month against the monthly cap.
+- `/dashboard` (password): month selector; threat vs protest volume; month-over-month strip; written monthly summary; threat types by engagement; top targets and named people; recurring threat posters with drill-down; protest locations, topics and organizers; heated-topic ranking; early-warning layer.
+- `POST /api/alerts` with `Authorization: Bearer $ALERT_INGEST_TOKEN` and a JSON body:
+  `source` (x, bluesky, facebook, instagram, newsletter), `url`, `author`, `text`, `posted_at` (ISO 8601),
+  `matched_terms` (list or `;`-separated), `signal_level` (critical, high, medium, low).
+  Returns 201 when stored, 200 for a duplicate, 400 on bad input, 401 on a bad token, 503 if unconfigured.
+- Alerts are deduped by normalized URL (host lowercased, `www.` dropped, twitter.com = x.com, query, fragment
+  and trailing slash removed). The first-seen time is kept. An alert whose URL later arrives in a Meltwater
+  upload is marked "Confirmed in Meltwater" with its lead time. Alerts are a separate layer and never enter
+  Meltwater threat, heat or volume totals.
+
 ## Run locally
 ```
 pip install -r requirements.txt -r requirements-dev.txt

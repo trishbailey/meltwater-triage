@@ -8,6 +8,8 @@ services:
     envVars:
       - key: APP_PASSWORD
         sync: false
+      - key: ALERT_INGEST_TOKEN
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: REFINE_MODEL
