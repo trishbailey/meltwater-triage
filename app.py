@@ -124,13 +124,6 @@ def create_app() -> Flask:
     # Render terminates TLS at one proxy hop; trust its X-Forwarded-For/Proto.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
-    @app.context_processor
-    def _inject_downloads():
-        try:
-            return {"recent_downloads": jobs.list_recent_downloads()}
-        except Exception:
-            return {"recent_downloads": []}
-
     @app.route("/login", methods=["GET", "POST"])
     def login():
         return redirect(_safe_next(request.values.get("next")))
