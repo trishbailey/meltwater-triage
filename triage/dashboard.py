@@ -172,6 +172,9 @@ def _groups(rows: list[dict], kind: str) -> list[dict]:
                     "label": labels_.pop() if len(labels_) == 1 else "",
                     "reason": ({m["reason"] for m in members}.pop() if len({m["reason"] for m in members}) == 1 else ""),
                     "platforms": sorted({m["platform"] for m in members if m["platform"]})})
+    # Posts still waiting for a judgment come first, so newly loaded material is at the top;
+    # posts already marked Relevant stay below and can be changed at any time.
+    out.sort(key=lambda g: 0 if any(not m["label"] for m in g["members"]) else 1)
     return out
 
 
@@ -181,12 +184,16 @@ def _section(rows: list[dict], kind: str) -> dict:
     pending = [r for r in rows if not r["reviewed"]]
     g_rev, g_pen = _groups(reviewed, kind), _groups(pending, kind)
     shown_rev, shown_pen = g_rev[:MAX_GROUPS], g_pen[:MAX_GROUPS]
+    todo = [g for g in shown_rev if any(not m["label"] for m in g["members"])]
+    done = [g for g in shown_rev if g not in todo]
     return {
         "kind": kind, "count": len(rows),
         "reviewed": len(reviewed), "pending": len(pending),
         "topics": _topics(kept, kind),
         "targets": _target_counts(kept, physical=(kind == "protest")),
         "groups": shown_rev, "pending_groups": shown_pen,
+        "todo_groups": todo, "done_groups": done,
+        "todo_posts": sum(g["n"] for g in todo), "done_posts": sum(g["n"] for g in done),
         "groups_total": len(g_rev), "pending_groups_total": len(g_pen),
         "more": sum(g["n"] for g in g_rev[MAX_GROUPS:]) + sum(g["n"] for g in g_pen[MAX_GROUPS:]),
         "relevant": len(kept),

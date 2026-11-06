@@ -93,7 +93,7 @@ label{display:block;font-size:14px;margin:0 0 6px}
 .rel-btns .btn[aria-pressed=true]{border-color:var(--gold);background:var(--gold);color:#0b1526;font-weight:700}
 .item-hidden{opacity:.55;border-style:dashed}
 .dl-btn[aria-disabled=true]{opacity:.45;cursor:not-allowed}
-.sec-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}.ptext{margin:4px 0;white-space:pre-line}.reason-note{font:inherit;font-size:14px;padding:6px 8px;min-width:220px}.chip{font:inherit;font-size:14px;padding:7px 14px;border-radius:999px;border:1px solid var(--line,#2a3a55);background:transparent;color:inherit;cursor:pointer}.chip:hover{border-color:var(--gold)}#reason-pop{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(5,10,20,.7);padding:16px}#reason-pop[hidden]{display:none}.rp-card{background:var(--panel,#13203a);border:1px solid var(--line,#2a3a55);border-radius:12px;padding:18px 20px;max-width:520px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.5)}.rp-card h3{margin:0 0 6px}.rp-preview{margin:0 0 12px;overflow-wrap:anywhere}.rp-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}.rp-other{margin-bottom:12px}.review-end{margin:14px 0 6px;display:flex;flex-wrap:wrap;gap:12px;align-items:center}.dl-end{margin:16px 0 4px}.btn.primary:disabled{opacity:.45;cursor:not-allowed}.post-group{border:1px solid var(--line,#2a3a55);border-radius:8px;margin:10px 0;padding:6px 10px}.group-head{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between}.dl-label{display:inline}.group-members{margin-top:6px}.group-members .post-row{margin-left:14px}.dl-list{list-style:none;padding:0;margin:0;font-size:13px}
+.sec-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}.ptext{margin:4px 0;white-space:pre-line}.reason-note{font:inherit;font-size:14px;padding:6px 8px;min-width:220px}.chip{font:inherit;font-size:14px;padding:7px 14px;border-radius:999px;border:1px solid var(--line,#2a3a55);background:transparent;color:inherit;cursor:pointer}.chip:hover{border-color:var(--gold)}#reason-pop{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(5,10,20,.7);padding:16px}#reason-pop[hidden]{display:none}.rp-card{background:var(--panel,#13203a);border:1px solid var(--line,#2a3a55);border-radius:12px;padding:18px 20px;max-width:520px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.5)}.rp-card h3{margin:0 0 6px}.rp-preview{margin:0 0 12px;overflow-wrap:anywhere}.rp-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}.rp-other{margin-bottom:12px}.review-line{border:0;border-top:2px solid var(--gold,#c9a84c);margin:18px 0 10px}.todo-head{margin:12px 0 4px}.review-end{margin:14px 0 6px;display:flex;flex-wrap:wrap;gap:12px;align-items:center}.dl-end{margin:16px 0 4px}.btn.primary:disabled{opacity:.45;cursor:not-allowed}.post-group{border:1px solid var(--line,#2a3a55);border-radius:8px;margin:10px 0;padding:6px 10px}.group-head{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between}.dl-label{display:inline}.group-members{margin-top:6px}.group-members .post-row{margin-left:14px}.dl-list{list-style:none;padding:0;margin:0;font-size:13px}
 .dl-list li{margin:6px 0;word-break:break-word}
 
 
@@ -154,8 +154,7 @@ function mark(btn){
     if(!x[0]){alert(x[1].error||"Could not save label");return;}
     wrap.dataset.label=label;
     wrap.querySelectorAll(".rel-btns .btn").forEach(function(b){b.setAttribute("aria-pressed", b.dataset.label===label?"true":"false");});
-    wrap.classList.toggle("item-hidden", label==="not_relevant");
-    applyHide();
+    if(label!=="not_relevant"){wrap.classList.remove("item-hidden"); applyHide();}  // a Not relevant post stays until its reason is given
     document.dispatchEvent(new CustomEvent("labels-saved"));
     if(label==="not_relevant"){var t=wrap.querySelector(".ptext");
       openReason([{item_type:wrap.dataset.itemType,item_id:wrap.dataset.itemId}], t?t.textContent.trim().slice(0,160):"");}
@@ -190,9 +189,9 @@ function markGroup(btn){
     rows.forEach(function(r){
       r.dataset.label=label;
       r.querySelectorAll(".rel-btns .btn").forEach(function(b){b.setAttribute("aria-pressed",b.dataset.label===label?"true":"false");});
-      r.classList.toggle("item-hidden",label==="not_relevant");
+      if(label!=="not_relevant") r.classList.remove("item-hidden");
     });
-    applyHide();
+    if(label!=="not_relevant") applyHide();
     document.dispatchEvent(new CustomEvent("labels-saved"));
     if(label==="not_relevant"){openReason(items,items.length+" similar posts");}
   }).catch(function(){alert("Could not save labels");});
@@ -206,7 +205,12 @@ function openReason(items,preview){
   pop.querySelector(".reason-note").value="";
   pop.hidden=false;
 }
-function closeReason(){var pop=document.getElementById("reason-pop"); if(pop)pop.hidden=true; popItems=null;}
+function closeReason(){
+  var pop=document.getElementById("reason-pop"); if(pop)pop.hidden=true; popItems=null;
+  document.querySelectorAll('[data-label="not_relevant"]').forEach(function(el){el.classList.add("item-hidden");});
+  applyHide();  // the marked posts leave the list once the reason is given or skipped
+  document.dispatchEvent(new CustomEvent("reason-closed"));
+}
 function saveReason(reason,note){
   var items=popItems; if(!items)return;
   fetch("/api/relevance/reason",{method:"POST",credentials:"same-origin",
