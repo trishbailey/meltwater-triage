@@ -10,6 +10,7 @@ import pandas as pd
 
 from .export import (PROTEST_CATS, THREAT_CATS, author_handle, is_rejected, post_text)
 from .origin import origin_label
+from .taxonomy import canon_targets, canon_topic
 from .unified import WINDOW_DAYS
 
 COLORS = {"threat": "#c92f24", "protest": "#c8a24a"}
@@ -93,35 +94,32 @@ def _view(df: pd.DataFrame, labels: dict) -> list[dict]:
     return out
 
 
-def _split_counts(rows: list[dict], field: str, n: int = TOP_N) -> list[dict]:
+def _target_counts(rows: list[dict], n: int = TOP_N) -> list[dict]:
+    """Posts per grouped target. A post naming two variants of one target counts once."""
     counts: dict[str, list] = {}
     for r in rows:
-        for part in r[field].split(";"):
-            part = part.strip()
-            if part:
-                rec = counts.setdefault(part.lower(), [part, 0, 0.0])
-                rec[1] += 1
-                rec[2] += r["eng"]
-    items = sorted(counts.values(), key=lambda x: (x[1], x[2]), reverse=True)[:n]
-    return _bars([{"label": a, "value": b, "engagement": int(c)} for a, b, c in items])
+        for label in canon_targets(r["targets"]):
+            rec = counts.setdefault(label.lower(), [label, 0])
+            rec[1] += 1
+    items = sorted(counts.values(), key=lambda x: (-x[1], x[0]))[:n]
+    return _bars([{"label": a, "value": b} for a, b in items])
 
 
 def _topics(rows: list[dict], kind: str) -> list[dict]:
-    """Topic analysis: threat type for threats, protest topic for protests."""
-    field = "threat_type" if kind == "threat" else "protest_topic"
+    """Topic analysis: threat type for threats, grouped protest topic for protests."""
     groups: dict[str, dict] = {}
     for r in rows:
-        label = r[field].strip() or PENDING
-        g = groups.setdefault(label.lower(), {"label": label.capitalize() if kind == "threat" else label,
-                                              "value": 0, "engagement": 0.0, "themes": {}})
+        if kind == "threat":
+            label = r["threat_type"].strip().capitalize() or PENDING
+        else:
+            label = canon_topic(r["protest_topic"]) or PENDING
+        g = groups.setdefault(label.lower(), {"label": label, "value": 0, "themes": {}})
         g["value"] += 1
-        g["engagement"] += r["eng"]
-        theme = r["theme"]
-        if theme and kind == "threat":
-            g["themes"][theme.lower()] = g["themes"].get(theme.lower(), 0) + 1
-    items = sorted(groups.values(), key=lambda g: (g["label"] == PENDING, -g["value"], -g["engagement"]))[:TOP_N]
+        if kind == "threat" and r["theme"]:
+            t = r["theme"].lower()
+            g["themes"][t] = g["themes"].get(t, 0) + 1
+    items = sorted(groups.values(), key=lambda g: (g["label"] == PENDING, g["label"] == "Other", -g["value"]))[:TOP_N]
     for g in items:
-        g["engagement"] = int(g["engagement"])
         g["themes"] = [t for t, _ in sorted(g["themes"].items(), key=lambda kv: -kv[1])[:3]]
     return _bars(items)
 
@@ -136,26 +134,6 @@ def _sorted_posts(rows: list[dict]) -> list[dict]:
                   reverse=True)
 
 
-def _authors(rows: list[dict], n: int = 10) -> list[dict]:
-    groups: dict[str, dict] = {}
-    for r in rows:
-        key = (r["handle"] or r["name"]).strip().lower()
-        if not key:
-            continue
-        g = groups.setdefault(key, {"handle": r["handle"] or r["name"], "value": 0, "engagement": 0.0,
-                                    "platforms": set(), "rows": []})
-        g["value"] += 1
-        g["engagement"] += r["eng"]
-        if r["platform"]:
-            g["platforms"].add(r["platform"])
-        g["rows"].append(r)
-    items = sorted(groups.values(), key=lambda g: (g["value"], g["engagement"]), reverse=True)[:n]
-    out = [{"label": g["handle"], "value": g["value"], "engagement": int(g["engagement"]),
-            "platforms": ", ".join(sorted(g["platforms"])),
-            "posts": [_post_card(r) for r in _sorted_posts(g["rows"])[:8]]} for g in items]
-    return _bars(out)
-
-
 def _section(rows: list[dict], kind: str) -> dict:
     ordered = _sorted_posts(rows)
     return {
@@ -163,10 +141,10 @@ def _section(rows: list[dict], kind: str) -> dict:
         "reviewed": sum(1 for r in rows if r["reviewed"]),
         "pending": sum(1 for r in rows if not r["reviewed"]),
         "topics": _topics(rows, kind),
-        "targets": _split_counts(rows, "targets"),
-        "authors": _authors(rows),
+        "targets": _target_counts(rows),
         "posts": [_post_card(r) for r in ordered[:MAX_POSTS]],
         "more": max(0, len(ordered) - MAX_POSTS),
+        "relevant": sum(1 for r in rows if r["label"] == "relevant"),
         "download": f"/download/{kind}s.xlsx",
         "color": COLORS[kind],
     }

@@ -19,25 +19,20 @@
 {% if items %}<div class="bars">{% for row in items %}
 <div class="bar"><div class="lab">{{ row.label }}{% if row.themes %}<div class="note">{{ row.themes|join(", ") }}</div>{% endif %}</div><div class="track" style="display:flex;align-items:center">
 <div class="fill" style="width:{{ row.pct }}%;background:{{ color }}"></div>
-<span class="val">{{ row.value }} post{{ "s" if row.value != 1 }} · {{ "{:,}".format(row.engagement) }} eng</span>
+<span class="val">{{ row.value }} post{{ "s" if row.value != 1 }}</span>
 </div></div>{% endfor %}</div>
 {% else %}<p class="note">{{ empty }}</p>{% endif %}
 {% endmacro %}
 {% macro section(s, title, anchor, noun) %}
 <section class="panel" id="{{ anchor }}">
 <div class="sec-head"><h2>{{ title }} <span class="note">{{ s.count }} post{{ "s" if s.count != 1 }}</span></h2>
-<a class="btn" href="{{ s.download }}" download>Download {{ noun }} posts (Excel)</a></div>
+<a class="btn dl-btn" href="{{ s.download }}" download data-noun="{{ noun }}"{% if not s.relevant %} aria-disabled="true"{% endif %}>Download <span class="dl-n">{{ s.relevant }}</span> relevant {{ noun }} post<span class="dl-s">{{ "s" if s.relevant != 1 }}</span> (Excel)</a></div>
 {% if s.count %}
-<p class="note">{{ s.reviewed }} reviewed by AI{% if s.pending %}, {{ s.pending }} pre-sorted and waiting for review{% endif %}. The download has the raw posts and the AI analysis together.</p>
+<p class="note">{{ s.reviewed }} reviewed by AI{% if s.pending %}, {{ s.pending }} pre-sorted and waiting for review{% endif %}. Review the flagged posts below and mark each Relevant or Not relevant. The download contains only the posts marked Relevant, with the raw data and the AI analysis.</p>
 <div class="grid2">
 <div><h3>Topic analysis</h3>{{ bars(s.topics, s.color, "No topics yet.") }}</div>
 <div><h3>Top {{ noun }} targets</h3>{{ bars(s.targets, s.color, "Targets appear after AI review.") }}</div>
 </div>
-<h3>Top {{ noun }} authors</h3>
-{% if s.authors %}
-{% for a in s.authors %}<details><summary><strong>{{ a.label }}</strong> · {{ a.value }} post{{ "s" if a.value != 1 }} · {{ "{:,}".format(a.engagement) }} eng{% if a.platforms %} · {{ a.platforms }}{% endif %}</summary>
-<div class="body">{% for post in a.posts %}{{ post_row(post) }}{% endfor %}</div></details>{% endfor %}
-{% else %}<p class="note">No authors yet.</p>{% endif %}
 <details class="flagged"><summary><strong>Flagged posts</strong> ({{ s.count }})</summary>
 <div class="body">{% for post in s.posts %}{{ post_row(post) }}{% endfor %}
 {% if s.more %}<p class="note">Showing the newest {{ s.posts|length }}. {{ s.more }} more are in the download.</p>{% endif %}</div></details>
@@ -66,6 +61,24 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="{{ url_for('static', filename='map-labels.js') }}"></script>
 <script>
+(function(){
+function recount(){
+  document.querySelectorAll("section.panel").forEach(function(sec){
+    var btn=sec.querySelector(".dl-btn"); if(!btn)return;
+    var seen={}, n=0;
+    sec.querySelectorAll(".post-row").forEach(function(r){
+      if(r.dataset.label==="relevant"){var k=r.dataset.itemType+":"+r.dataset.itemId; if(!seen[k]){seen[k]=1;n++;}}});
+    btn.querySelector(".dl-n").textContent=n;
+    btn.querySelector(".dl-s").textContent=n===1?"":"s";
+    if(n) btn.removeAttribute("aria-disabled"); else btn.setAttribute("aria-disabled","true");
+  });
+}
+document.addEventListener("click",function(e){
+  var d=e.target.closest(".dl-btn");
+  if(d&&d.getAttribute("aria-disabled")==="true"){e.preventDefault();return;}
+});
+new MutationObserver(recount).observe(document.body,{subtree:true,attributes:true,attributeFilter:["data-label"]});
+})();
 (function(){
 if(!window.L)return;
 var assets=JSON.parse(document.getElementById("map-assets").textContent||"[]");
