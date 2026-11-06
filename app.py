@@ -76,6 +76,12 @@ def _safe_next(target: str | None) -> str:
     return target
 
 
+try:
+    from triage.feedback import NOT_RELEVANT_REASONS as _NR_REASONS, RELEVANT_REASONS as _R_REASONS
+except Exception:  # noqa: BLE001
+    _NR_REASONS, _R_REASONS = {}, {}
+
+
 def _same_origin_upload() -> bool:
     """Browsers send Origin on POST. Reject cross-site uploads that would spend the API budget."""
     origin = request.headers.get("Origin", "").strip()
@@ -247,8 +253,14 @@ def create_app() -> Flask:
     def dashboard():
         st = _storage()
         raw = unified.load(st) if st is not None else pd.DataFrame()
+        try:
+            from triage import feedback as fb
+            reasons = fb.all_reasons()
+        except Exception:
+            reasons = {}
         return render_template("dashboard.html", **dash.build(raw, _labels_with_inheritance(raw),
-                                                              storage_ready=st is not None))
+                                                              storage_ready=st is not None, reasons=reasons),
+                               not_relevant_reasons=_NR_REASONS, relevant_reasons=_R_REASONS)
 
     @app.get("/api/map")
     @require_password
@@ -385,6 +397,23 @@ def create_app() -> Flask:
         if body.get("label") == "relevant":
             _kick_analysis()
         return {"saved": n, "label": body.get("label")}
+
+    @app.post("/api/relevance/reason")
+    def relevance_reason():
+        if not _same_origin_upload():
+            return {"error": "Blocked: submit from this site."}, 403
+        body = request.get_json(silent=True) or {}
+        items = body.get("items")
+        if not isinstance(items, list) or not items or not all(isinstance(i, dict) for i in items):
+            return {"error": "items must be a non-empty list"}, 400
+        try:
+            from triage import feedback
+            n = feedback.set_reasons(items, str(body.get("reason") or ""), body.get("note"))
+        except ValueError as exc:
+            return {"error": str(exc)}, 400
+        except RuntimeError as exc:
+            return {"error": str(exc)}, 503
+        return {"saved": n}
 
     @app.post("/api/alerts")
     def ingest_alert():

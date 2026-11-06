@@ -276,6 +276,7 @@ def few_shot_block(storage=None) -> str:
             return ""
         store = storage or Storage()
         labeled = {lab: fb.recent_examples(lab, limit=120) for lab in ("relevant", "not_relevant")}
+        why = fb.all_reasons()
         post_ids = [str(r["item_id"]) for rows in labeled.values() for r in rows if r["item_type"] == "post"]
         by_id = store.posts_for_ids(post_ids) if post_ids else {}
         alert_text = {}
@@ -286,6 +287,7 @@ def few_shot_block(storage=None) -> str:
         for lab, title in (("relevant", "RELEVANT (keep)"), ("not_relevant", "NOT RELEVANT (discard)")):
             texts = []
             for row in labeled[lab]:
+                rec = why.get((row["item_type"], str(row["item_id"]))) or {}
                 if row["item_type"] == "alert":
                     t = alert_text.get(str(row["item_id"]), "")
                 else:
@@ -293,10 +295,21 @@ def few_shot_block(storage=None) -> str:
                     t = str(data.get("Hit Sentence") or data.get("narrative_summary") or "")
                 t = t.replace("\n", " ").strip()
                 if t:
-                    texts.append(t[:240])
+                    family = fb.NOT_RELEVANT_REASONS if lab == "not_relevant" else fb.RELEVANT_REASONS
+                    tag = family.get(rec.get("reason", ""), "")
+                    extra = (" [" + tag + (": " + rec["note"] if rec.get("note") else "") + "]") if tag else ""
+                    texts.append(t[:240] + extra)
             keep = [g[0] for g in group_indices(texts)][:30]  # one example per pattern
             if keep:
                 lines += [title + ":"] + ["- " + texts[i] for i in keep]
+        rules = []
+        for lab, word in (("not_relevant", "Discard"), ("relevant", "Note")):
+            for code, n in sorted(fb.reason_counts(lab).items(), key=lambda kv: -kv[1]):
+                if n >= 3 and code != "other":
+                    name = fb.ALL_REASONS.get(code, code).lower()
+                    rules.append(f"- {word} posts that are: {name} (the analyst said so {n} times)")
+        if rules:
+            lines = ["Standing rules from the analyst:"] + rules + lines
         return "\n".join(lines)[:8000]
     except Exception:
         return ""

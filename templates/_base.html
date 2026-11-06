@@ -93,7 +93,7 @@ label{display:block;font-size:14px;margin:0 0 6px}
 .rel-btns .btn[aria-pressed=true]{border-color:var(--gold);background:var(--gold);color:#0b1526;font-weight:700}
 .item-hidden{opacity:.55;border-style:dashed}
 .dl-btn[aria-disabled=true]{opacity:.45;cursor:not-allowed}
-.sec-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}.ptext{margin:4px 0;white-space:pre-line}.post-group{border:1px solid var(--line,#2a3a55);border-radius:8px;margin:10px 0;padding:6px 10px}.group-head{display:flex;gap:12px;justify-content:space-between}.group-members{margin-top:6px}.group-members .post-row{margin-left:14px}.dl-list{list-style:none;padding:0;margin:0;font-size:13px}
+.sec-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}.ptext{margin:4px 0;white-space:pre-line}.reason-row{display:none;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 2px}.chip{font:inherit;font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--line,#2a3a55);background:transparent;color:inherit;cursor:pointer}.chip[aria-pressed=true]{background:var(--accent,#2f6fb5);border-color:transparent;color:#fff}[data-label=not_relevant]>.reason-row.nr,[data-state=not_relevant]>.reason-row.nr,[data-label=relevant]>.reason-row.rl,[data-state=relevant]>.reason-row.rl{display:flex}.reason-note{font:inherit;font-size:12px;padding:3px 6px;min-width:200px}.post-group{border:1px solid var(--line,#2a3a55);border-radius:8px;margin:10px 0;padding:6px 10px}.group-head{display:flex;gap:12px;justify-content:space-between}.group-members{margin-top:6px}.group-members .post-row{margin-left:14px}.dl-list{list-style:none;padding:0;margin:0;font-size:13px}
 .dl-list li{margin:6px 0;word-break:break-word}
 
 
@@ -171,6 +171,7 @@ function applyHide(){
     g.hidden=all && !on;
     var states={};rows.forEach(function(r){states[r.dataset.label||""]=1;});
     var keys=Object.keys(states);
+    g.dataset.state=keys.length===1?keys[0]:"";
     g.querySelectorAll(".grp-btns .btn").forEach(function(b){
       b.setAttribute("aria-pressed",(keys.length===1&&keys[0]===b.dataset.groupLabel)?"true":"false");});
   });
@@ -191,7 +192,26 @@ function markGroup(btn){
     applyHide();
   }).catch(function(){alert("Could not save labels");});
 }
+function saveReason(chip,reason,note){
+  var holder=chip.closest(".post-group")||chip.closest("[data-item-type]"); if(!holder)return;
+  var rows=holder.matches("[data-item-type]")?[holder]:Array.prototype.slice.call(holder.querySelectorAll("[data-item-type]"));
+  var items=rows.map(function(r){return {item_type:r.dataset.itemType,item_id:r.dataset.itemId};});
+  var row=chip.closest(".reason-row");
+  var already=chip.getAttribute("aria-pressed")==="true"&&note===undefined;
+  var send=already?"":reason;  // clicking the chosen reason again clears it
+  fetch("/api/relevance/reason",{method:"POST",credentials:"same-origin",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify({items:items,reason:send,note:note||""})
+  }).then(function(r){return r.json().then(function(j){return [r.ok,j];});}).then(function(x){
+    if(!x[0]){alert(x[1].error||"Could not save the reason");return;}
+    row.querySelectorAll(".chip").forEach(function(c){c.setAttribute("aria-pressed",(send&&c.dataset.reason===send)?"true":"false");});
+    var on=row.querySelector(".other-note"); if(on) on.hidden=send!=="other";
+  }).catch(function(){alert("Could not save the reason");});
+}
 document.addEventListener("click",function(e){
+  var ch=e.target.closest(".reason-row .chip"); if(ch){e.preventDefault();saveReason(ch,ch.dataset.reason);return;}
+  var sv=e.target.closest(".reason-row .save-note"); if(sv){e.preventDefault();
+    var row=sv.closest(".reason-row"), other=row.querySelector('.chip[data-reason="other"]');
+    saveReason(other,"other",row.querySelector(".reason-note").value);return;}
   var gb=e.target.closest(".grp-btns .btn"); if(gb){e.preventDefault();markGroup(gb);return;}
   var b=e.target.closest(".rel-btns .btn"); if(b){e.preventDefault();mark(b);}
 });
