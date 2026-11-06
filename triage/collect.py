@@ -213,8 +213,8 @@ def start_scheduler(storage, logger=log, env=None, sleep=None):
 
 
 def start_review_loop(storage, logger=log, env=None, sleep=None):
-    """Keep Claude's filter running: every REVIEW_INTERVAL_MINUTES (default 10), judge new candidates,
-    analyze approved posts, and alert the analyst. Needs ANTHROPIC_API_KEY."""
+    """Keep Claude's filter running: every REVIEW_INTERVAL_MINUTES (default 10), judge new candidates
+    and alert the analyst. Needs ANTHROPIC_API_KEY."""
     import threading
     import time
     env = os.environ if env is None else env

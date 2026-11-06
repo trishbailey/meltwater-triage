@@ -89,7 +89,7 @@ _RUN_LOCK = threading.Lock()
 
 
 def run_all(storage, complete=None, notify: bool = True) -> dict:
-    """Filter new candidates, analyze approved posts, then alert the analyst. One run at a time."""
+    """Filter new candidates, then alert the analyst. Analysis runs only on the analyst's request."""
     from .pipeline import backfill_flagged
     if not _RUN_LOCK.acquire(blocking=False):
         return {"skipped": "another run is in progress"}
@@ -102,8 +102,7 @@ def run_all(storage, complete=None, notify: bool = True) -> dict:
 def _run_all(storage, complete, notify, backfill_flagged) -> dict:
     out = {}
     for name, fn in (("filtered_posts", lambda: backfill_flagged(storage, complete=complete)),
-                     ("filtered_alerts", lambda: review_alerts(storage, complete=complete)),
-                     ("analyzed", lambda: analyze_relevant(storage, complete=complete))):
+                     ("filtered_alerts", lambda: review_alerts(storage, complete=complete))):
         try:
             out[name] = fn()
         except Exception as exc:  # noqa: BLE001

@@ -6,7 +6,7 @@
 <span class="src">{{ post.platform or "Unknown platform" }}</span>
 <strong>{{ post.handle or "Unknown user" }}</strong>
 <span class="note">{{ post.date or "No date" }}</span>
-{% if not post.reviewed %}<span class="tag">Pre-sorted</span>{% endif %}{% if post.auto %}<span class="tag" title="Copied from a similar post you judged. Click Relevant or Not relevant to change it.">Auto-marked: similar to a post you judged</span>{% endif %}
+{% if not post.reviewed %}<span class="tag">Pre-sorted</span>{% endif %}{% if post.auto == "rule" %}<span class="tag" title="Matched one of your standing rules. Click Relevant or Not relevant to change it.">Auto-marked by your rule: not about AUKUS</span>{% elif post.auto %}<span class="tag" title="Copied from a similar post you judged. Click Relevant or Not relevant to change it.">Auto-marked: similar to a post you judged</span>{% endif %}
 <div class="ptext">{{ post.text or post.summary }}</div>
 {% if post.link %}<a href="{{ post.link }}" rel="noopener noreferrer" target="_blank">Open post</a>{% endif %}
 </div>
@@ -45,7 +45,7 @@
 {% macro section(s, title, anchor, noun) %}
 <section class="panel" id="{{ anchor }}">
 <div class="sec-head">{% set shown = s.reviewed if review_on else s.count %}<h2>{{ title }} <span class="note">{{ shown }} post{{ "s" if shown != 1 }}</span></h2>
-<a class="btn dl-btn" href="{{ s.download }}" download data-noun="{{ noun }}"{% if not s.relevant %} aria-disabled="true"{% endif %}><span class="dl-label">Download <span class="dl-n">{{ s.relevant }}</span> relevant {{ noun }} post<span class="dl-s">{{ "s" if s.relevant != 1 }}</span> (Excel)</span></a></div>
+</div>
 {% if s.count %}
 <p class="note">{{ s.reviewed }} passed the AI filter and are ready for your review. Similar posts are grouped: mark a group once to label every post in it, or open it to mark posts one by one. The download contains only the posts marked Relevant, with the raw data and the AI analysis.</p>
 <details class="flagged" open><summary><strong>AI-reviewed posts</strong> ({{ s.reviewed }} post{{ "s" if s.reviewed != 1 }} in {{ s.groups_total }} group{{ "s" if s.groups_total != 1 }})</summary>
@@ -54,13 +54,18 @@
 {% if s.pending %}{% if review_on %}<p class="note">{{ s.pending }} more post{{ "s" if s.pending != 1 }} waiting for the AI filter. They appear here once it passes them.</p>
 {% else %}<details class="flagged"><summary><strong>Pre-sorted, AI filter is off</strong> ({{ s.pending }} post{{ "s" if s.pending != 1 }} in {{ s.pending_groups_total }} group{{ "s" if s.pending_groups_total != 1 }})</summary>
 <div class="body">{% for g in s.pending_groups %}{{ group_card(g) }}{% endfor %}</div></details>{% endif %}{% endif %}
+<div class="review-end">
+<button type="button" class="btn primary analyze-btn"{% if not s.relevant %} disabled{% endif %}><span class="dl-label">Analyze <span class="an-count">{{ s.relevant }}</span> relevant {{ noun }} post<span class="an-plural">{{ "s" if s.relevant != 1 }}</span> with Claude</span></button>
+<span class="note analyze-status" role="status"></span>
+</div>
 {% if s.more %}<p class="note">Showing the newest groups. {{ s.more }} more posts are not listed.</p>{% endif %}
 <div class="analysis" data-color="{{ s.color }}">
-<p class="note an-empty"{% if s.relevant %} hidden{% endif %}>Topic and target analysis appears once you mark posts Relevant. It counts only those posts.</p>
+<p class="note an-empty"{% if s.relevant %} hidden{% endif %}>Topic and target analysis appears once you mark posts Relevant. It counts only those posts. Click Analyze with Claude to refine it with AI.</p>
 <div class="grid2 an-body"{% if not s.relevant %} hidden{% endif %}>
 <div><h3>Topic analysis <span class="note">(<span class="an-n">{{ s.relevant }}</span> relevant)</span></h3><div class="an-topics">{{ bars(s.topics, s.color, "No topics yet.") }}</div></div>
 <div><h3>Top {{ noun }} targets</h3><div class="an-targets">{{ bars(s.targets, s.color, "No targets named.") }}</div></div>
 </div></div>
+<p class="dl-end"><a class="btn primary dl-btn" href="{{ s.download }}" download data-noun="{{ noun }}"{% if not s.relevant %} aria-disabled="true"{% endif %}><span class="dl-label">Download <span class="dl-n">{{ s.relevant }}</span> relevant {{ noun }} post<span class="dl-s">{{ "s" if s.relevant != 1 }}</span> (Excel)</span></a></p>
 {% else %}<p>No {{ noun }} posts {{ window_label }}.</p>{% endif %}
 </section>
 {% endmacro %}
@@ -138,12 +143,32 @@ function recount(){
     btn.querySelector(".dl-n").textContent=n;
     btn.querySelector(".dl-s").textContent=n===1?"":"s";
     if(n) btn.removeAttribute("aria-disabled"); else btn.setAttribute("aria-disabled","true");
+    var ab=sec.querySelector(".analyze-btn");
+    if(ab){ab.querySelector(".an-count").textContent=n;ab.querySelector(".an-plural").textContent=n===1?"":"s";ab.disabled=!n||ab.dataset.busy==="1";}
     analyse(sec,seen);
   });
 }
 document.addEventListener("click",function(e){
   var d=e.target.closest(".dl-btn");
   if(d&&d.getAttribute("aria-disabled")==="true"){e.preventDefault();return;}
+});
+function pollAnalyze(){
+  fetch("/api/analyze",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(j){
+    document.querySelectorAll(".analyze-status").forEach(function(el){el.textContent=j.running?"Analyzing with Claude… this takes a minute.":(j.last&&j.last.error?"Analysis failed: "+j.last.error:"");});
+    if(j.running){setTimeout(pollAnalyze,3000);}
+    else if(window.__analyzing){window.__analyzing=false;location.reload();}
+    else document.querySelectorAll(".analyze-btn").forEach(function(b){b.dataset.busy="0";});
+  }).catch(function(){setTimeout(pollAnalyze,5000);});
+}
+document.addEventListener("click",function(e){
+  var b=e.target.closest(".analyze-btn"); if(!b||b.disabled)return;
+  e.preventDefault();
+  document.querySelectorAll(".analyze-btn").forEach(function(x){x.dataset.busy="1";x.disabled=true;});
+  window.__analyzing=true;
+  fetch("/api/analyze",{method:"POST",credentials:"same-origin"}).then(function(r){return r.json();}).then(function(j){
+    if(j.error){alert(j.error);window.__analyzing=false;document.querySelectorAll(".analyze-btn").forEach(function(x){x.dataset.busy="0";});recount();return;}
+    pollAnalyze();
+  }).catch(function(){alert("Could not start the analysis");window.__analyzing=false;recount();});
 });
 recount();
 new MutationObserver(recount).observe(document.body,{subtree:true,attributes:true,attributeFilter:["data-label"]});
