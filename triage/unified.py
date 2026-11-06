@@ -13,13 +13,24 @@ import pandas as pd
 
 from .alerts import normalize_url
 
-WINDOW_DAYS = 30
+import os
+
+WINDOW_DAYS = 30  # kept for callers that want a rolling window; the dashboard uses START_DATE
+START_DATE = os.environ.get("DASHBOARD_START_DATE", "2026-11-01")  # posts before this are not shown
 SOURCE_LABELS = {"x": "X", "bluesky": "Bluesky", "facebook": "Facebook", "instagram": "Instagram",
                  "newsletter": "Newsletter", "seerist": "Seerist", "web": "Web"}
 
 
-def cutoff(days: int = WINDOW_DAYS, now: datetime | None = None) -> datetime:
-    return (now or datetime.now(timezone.utc)) - timedelta(days=days)
+def start() -> datetime:
+    return datetime.fromisoformat(START_DATE).replace(tzinfo=timezone.utc)
+
+
+def cutoff(days: int | None = None, now: datetime | None = None) -> datetime:
+    """Earliest post time shown: the start date, or `days` back if that is later."""
+    first = start()
+    if days is None:
+        return first
+    return max(first, (now or datetime.now(timezone.utc)) - timedelta(days=days))
 
 
 def _alert_rows(alerts: pd.DataFrame, since: datetime) -> pd.DataFrame:
@@ -71,7 +82,7 @@ def combine(posts: pd.DataFrame | None, alerts: pd.DataFrame | None, since: date
     return out[out["category"].fillna("").astype(str) != ""].reset_index(drop=True)
 
 
-def load(storage, days: int = WINDOW_DAYS, now: datetime | None = None) -> pd.DataFrame:
+def load(storage, days: int | None = None, now: datetime | None = None) -> pd.DataFrame:
     """The last `days` days of flagged posts and alerts, or an empty frame without storage."""
     if storage is None:
         return pd.DataFrame()

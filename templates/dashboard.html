@@ -60,12 +60,12 @@
 <div><h3>Topic analysis <span class="note">(<span class="an-n">{{ s.relevant }}</span> relevant)</span></h3><div class="an-topics">{{ bars(s.topics, s.color, "No topics yet.") }}</div></div>
 <div><h3>Top {{ noun }} targets</h3><div class="an-targets">{{ bars(s.targets, s.color, "No targets named.") }}</div></div>
 </div></div>
-{% else %}<p>No {{ noun }} posts in the last {{ window_days }} days.</p>{% endif %}
+{% else %}<p>No {{ noun }} posts {{ window_label }}.</p>{% endif %}
 </section>
 {% endmacro %}
 
 <h1>Threat and Protest Monitor</h1>
-<p class="intro">Last {{ window_days }} days. Meltwater and Seerist posts are combined. The analysis and the map (at the bottom) show only posts you have marked Relevant. Use <strong>Add data</strong> to upload an export.</p>
+<p class="intro">Posts {{ window_label }}. Meltwater and Seerist posts are combined. The analysis and the map (at the bottom) show only posts you have marked Relevant. Use <strong>Add data</strong> to upload an export.</p>
 {% if not storage_ready %}<p class="err">Storage is not configured (DATABASE_URL is not set), so there is nothing to show.</p>{% endif %}
 <p class="note"><label><input type="checkbox" id="show-hidden"> Show items marked not relevant</label></p>
 

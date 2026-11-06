@@ -114,7 +114,8 @@ def backfill_flagged(storage, complete=None) -> int:
     function and no API key, returns 0.
     """
     from .refine import is_enabled, refine
-    posts = storage.load_posts(flagged_only=True)
+    from .unified import cutoff
+    posts = storage.load_posts(flagged_only=True, since=cutoff())  # skip posts before the start date
     if posts.empty:
         return 0
     refined = posts["refined_category"] if "refined_category" in posts.columns else pd.Series("", index=posts.index)

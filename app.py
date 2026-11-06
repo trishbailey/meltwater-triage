@@ -246,16 +246,16 @@ def create_app() -> Flask:
         if raw is not None and len(raw):
             labels = _labels()  # the map shows only posts the analyst marked Relevant
             raw = raw[[_is_relevant(r, labels) for r in raw.to_dict(orient="records")]]
-        return build_map(raw, days=unified.WINDOW_DAYS)
+        return build_map(raw, days=None)
 
     def _category_download(kind: str):
         st = _storage()
         if st is None:
             return Response("Storage is not configured.", 503)
         try:
-            days = max(1, min(365, int(request.args.get("days", unified.WINDOW_DAYS))))
+            days = max(1, min(365, int(request.args["days"]))) if "days" in request.args else None
         except ValueError:
-            days = unified.WINDOW_DAYS
+            days = None
         from triage.excel_safe import write_sheets
         from triage.export import single_sheet
         sheets = single_sheet(unified.load(st, days=days), kind, _labels(), relevant_only=True)

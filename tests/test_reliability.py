@@ -208,7 +208,7 @@ def test_flagged_backfill_merges_review_without_deleting(tmp_path, monkeypatch):
     from triage.storage import Storage, rows_to_store
     st = Storage(f"sqlite:///{tmp_path/'f.db'}")
     df = pd.DataFrame([
-        {"Document ID": "keep", "Date": "2026-10-02", "URL": "https://x.com/a/1",
+        {"Document ID": "keep", "Date": "2026-11-02", "URL": "https://x.com/a/1",
          "Hit Sentence": "bomb the base", "category": "threat", "is_flagged": True,
          "Engagement": 3},
         {"Document ID": "done", "Date": "2026-10-03", "URL": "https://x.com/a/2",
