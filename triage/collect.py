@@ -42,7 +42,14 @@ FACEBOOK_PAGES = [
 ]
 BLUESKY_QUERIES = ["AUKUS", "Pine Gap", "HMAS Stirling", "Osborne shipyard", "AUKUS protest", "AUKUS rally"]
 
-X_QUERY = '(AUKUS OR "Pine Gap" OR "HMAS Stirling" OR "Osborne shipyard") -is:retweet'
+_X_PLACES = '(AUKUS OR "Pine Gap" OR "HMAS Stirling" OR "Garden Island" OR "Henderson shipyard" OR "Osborne")'
+# (query, sort order): protest posts ranked by X relevancy, threat posts newest first so none are missed.
+X_QUERIES = [
+    (_X_PLACES + ' (rally OR march OR protest OR blockade OR vigil OR picket OR "day of action" OR '
+     '"peace camp" OR "stop the" OR "shut down") -is:retweet -is:reply lang:en', "relevancy"),
+    (_X_PLACES + ' (bomb OR "blow up" OR sabotage OR kill OR shoot OR "burn down" OR assassinate OR '
+     'traitor OR "know where you live") -is:retweet lang:en', "recency"),
+]
 X_TOKEN_VARS = ("X_BEARER_TOKEN", "TWITTER_BEARER_TOKEN", "X_API_BEARER_TOKEN")
 
 ACTOR_INSTAGRAM = "apify~instagram-post-scraper"
@@ -135,24 +142,37 @@ def x_token(env) -> str:
     return ""
 
 
-def x_alerts(token: str, fetch=_http, now: datetime | None = None, top_n: int = 10) -> list[dict]:
-    """Top posts (X's relevancy ranking) matching the AUKUS query since the last window. One cheap call."""
+def x_alerts(token: str, fetch=_http, now: datetime | None = None, top_n: int = 10,
+             queries=None) -> list[dict]:
+    """Boolean searches (protest, threat), each limited to `top_n` posts since the last window."""
     since = ((now or datetime.now(timezone.utc)) - timedelta(hours=WINDOW_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    params = urllib.parse.urlencode({
-        "query": X_QUERY, "start_time": since, "max_results": max(10, min(100, top_n)),
-        "sort_order": "relevancy", "tweet.fields": "created_at,public_metrics,author_id",
-        "expansions": "author_id", "user.fields": "username"})
-    data = fetch(f"https://api.x.com/2/tweets/search/recent?{params}", None,
-                 {"Authorization": f"Bearer {token}"}, 30) or {}
-    users = {u.get("id"): u.get("username", "") for u in (data.get("includes") or {}).get("users", [])}
-    out = []
-    for t in (data.get("data") or [])[:top_n]:
-        handle = users.get(t.get("author_id"), "")
-        url = f"https://x.com/{handle or 'i'}/status/{t.get('id')}"
-        a = _alert("x", url, handle, t.get("text", ""), t.get("created_at"))
-        if a:
-            out.append(a)
+    out, seen = [], set()
+    for query, order in (queries or X_QUERIES):
+        params = urllib.parse.urlencode({
+            "query": query, "start_time": since, "max_results": max(10, min(100, top_n)),
+            "sort_order": order, "tweet.fields": "created_at,public_metrics,author_id",
+            "expansions": "author_id", "user.fields": "username"})
+        data = fetch(f"https://api.x.com/2/tweets/search/recent?{params}", None,
+                     {"Authorization": f"Bearer {token}"}, 30) or {}
+        users = {u.get("id"): u.get("username", "") for u in (data.get("includes") or {}).get("users", [])}
+        for t in (data.get("data") or [])[:top_n]:
+            if t.get("id") in seen:
+                continue
+            seen.add(t.get("id"))
+            handle = users.get(t.get("author_id"), "")
+            a = _alert("x", f"https://x.com/{handle or 'i'}/status/{t.get('id')}", handle,
+                       t.get("text", ""), t.get("created_at"))
+            if a:
+                out.append(a)
     return out
+
+
+def _x_budget(storage, env, now: datetime | None) -> int:
+    """Search calls still allowed today (X_MAX_CALLS_PER_DAY, default 4), so repeat runs cannot run up usage."""
+    cap = int(env.get("X_MAX_CALLS_PER_DAY", "4") or 4)
+    day = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+    used = sum(1 for k in storage.notified_keys() if k[0] == "x_call" and k[1].startswith(day))
+    return max(0, cap - used)
 
 
 def collect(storage, fetch=_http, env=None, now: datetime | None = None) -> dict:
@@ -180,7 +200,15 @@ def collect(storage, fetch=_http, env=None, now: datetime | None = None) -> dict
     xt = x_token(env)
     if xt:
         top = int(env.get("X_TOP_N", "10") or 10)
-        jobs.append(("x", lambda: x_alerts(xt, fetch=fetch, now=now, top_n=top)))
+        room = _x_budget(storage, env, now)
+        queries = X_QUERIES[:room]
+        if not queries:
+            summary["x"] = "skipped: daily X call limit reached"
+        else:
+            day = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+            storage.mark_notified([("x_call", f"{day}:{datetime.now(timezone.utc).isoformat()}:{i}")
+                                   for i in range(len(queries))])
+            jobs.append(("x", lambda: x_alerts(xt, fetch=fetch, now=now, top_n=top, queries=queries)))
     else:
         summary["x"] = "skipped: X_BEARER_TOKEN not set"
     for name, run in jobs:

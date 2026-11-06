@@ -1,3 +1,4 @@
+import urllib.parse
 from datetime import datetime, timezone
 
 from triage import collect as c
@@ -70,7 +71,21 @@ def test_x_pull_takes_top_posts_only(tmp_path):
 
     now = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
     out = c.collect(st, fetch=fetch, env={"X_BEARER_TOKEN": "tok"}, now=now)
-    assert out["x"] == {"fetched": 10, "new": 10}
+    assert out["x"] == {"fetched": 10, "new": 10}  # both searches return the same ids; duplicates dropped
+    assert len(seen) == 2
     url, headers = seen[0]
     assert "sort_order=relevancy" in url and "max_results=10" in url and headers == {"Authorization": "Bearer tok"}
+    assert "rally" in urllib.parse.unquote_plus(url) and "recency" in seen[1][0]
     assert set(st.load_alerts()["source"]) == {"x"}
+
+
+def test_x_calls_are_capped_per_day(tmp_path):
+    st = Storage(f"sqlite:///{tmp_path/'cap.db'}")
+    calls = []
+    fetch = lambda url, data=None, headers=None, timeout=0: calls.append(url) or {}
+    now = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+    env = {"X_BEARER_TOKEN": "tok"}
+    for _ in range(4):
+        c.collect(st, fetch=fetch, env=env, now=now)
+    assert len(calls) == 4  # two runs of two searches; later runs are skipped
+    assert c.collect(st, fetch=fetch, env=env, now=now)["x"].startswith("skipped: daily X call limit")
