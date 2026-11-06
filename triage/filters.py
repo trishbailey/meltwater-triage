@@ -51,6 +51,9 @@ PETITION_PATTERN = re.compile(
 PHYSICAL_PROTEST_PATTERN = re.compile(
     r"\b(?:rall(?:y|ies|ying)|march(?:es|ing)?|blockad\w*|demonstrat\w*|picket\w*|vigil|sit-?in|occupation|occupy|"
     r"assemble|gather(?:ing)?\s+(?:at|outside|in front|on)|take to the streets|meet (?:at|outside)|in the streets)\b", re.I)
+# Slogans are opinion, not mobilization, unless paired with a rally/march/blockade or a place.
+SLOGANS = {"no to aukus", "aukus out", "nukes out", "close pine gap", "not in our name"}
+
 INFORMATIONAL_PATTERN = re.compile(
     r"\b(?:see|read|download|view)\b[^.!?]{0,40}\b(?:report|inquiry|enquiry|submission|article|here)\b|"
     r"\b(?:report|inquiry|forum|submission)\b", re.I)
@@ -172,7 +175,7 @@ def screen_text(text: str, p: Patterns) -> dict:
 
     # A protest needs a concrete mobilization term (rally, march, blockade...). Weak action/CTA words
     # such as "forum" or "inquiry" in commentary do not qualify on their own.
-    concrete = bool(m["disruption"] or PHYSICAL_PROTEST_PATTERN.search(text) or DISRUPTION_HINT.search(text))
+    concrete = bool([t for t in m["disruption"] if t.lower() not in SLOGANS] or PHYSICAL_PROTEST_PATTERN.search(text) or DISRUPTION_HINT.search(text))
     raw_action = bool(m["action"] or m["cta"] or m["disruption"])
     action_or_cta = raw_action and concrete
     has_place = bool(m["logistics"] or addresses or _place_match(text, p.weak_protest, raw_action))
