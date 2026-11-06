@@ -21,29 +21,75 @@ def _post_dates(df: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(df[c], errors="coerce") if c else pd.Series(pd.NaT, index=df.index)
 
 
-def recurring_threat_posters(flagged: pd.DataFrame, min_count: int = 2) -> pd.DataFrame:
-    """Authors with >= min_count threat posts: handle, name, count, engagement, first/last seen."""
+def _distinct_threats(texts: list[str]) -> int:
+    """Identical text is one threat. Empty text cannot be proven duplicate, so each such row counts."""
+    filled = [t for t in texts if t]
+    blanks = len(texts) - len(filled)
+    if not filled:
+        return len(texts)
+    return len(set(filled)) + blanks
+
+
+def recurring_threat_posters(flagged: pd.DataFrame, min_count: int = 2,
+                             respect_genuine: bool = True, category_filter: bool = True) -> pd.DataFrame:
+    """Authors with >= min_count distinct posts: handle, name, count, engagement, first/last seen.
+
+    By default only threat rows count. Pass category_filter=False when the caller already
+    chose the rows (threats or protests).
+    """
     cols = ["author_handle", "author_name", "threat_posts", "total_engagement", "first_seen", "last_seen"]
-    if flagged.empty or "category" not in flagged:
+    if flagged is None or flagged.empty:
         return pd.DataFrame(columns=cols)
-    t = flagged[flagged["category"].isin(["threat", "both"])]
-    if "is_genuine" in t:  # drop posts the review marked as not genuine
+    if category_filter:
+        if "category" not in flagged:
+            return pd.DataFrame(columns=cols)
+        t = flagged[flagged["category"].isin(["threat", "both"])]
+    else:
+        t = flagged
+    if respect_genuine and "is_genuine" in t:  # drop posts the review marked as not genuine
         t = t[t["is_genuine"].ne(False)]
     if t.empty:
         return pd.DataFrame(columns=cols)
+    from .textnorm import display_handle, single_post_text, supplied_handle
     hc, nc = _col(t, "author handle"), _col(t, "author name")
+    norms, handles, names = [], [], []
+    for _, row in t.iterrows():
+        rec = row.to_dict()
+        norms.append(" ".join(single_post_text(rec).split()).strip().lower())
+        raw_handle = supplied_handle(rec.get(hc)) if hc else ""
+        raw_name = supplied_handle(rec.get(nc)) if nc else ""
+        ident = display_handle(rec)
+        if raw_handle:
+            handles.append(raw_handle if raw_handle.startswith("@") else raw_handle)
+        elif ident.startswith("@"):
+            handles.append(ident)
+        else:
+            handles.append("")
+        names.append(raw_name or ("" if ident.startswith("@") else ident))
     work = pd.DataFrame({
-        "author_handle": t[hc].fillna("").astype(str).str.strip() if hc else "",
-        "author_name": t[nc].fillna("").astype(str).str.strip() if nc else "",
-        "eng": _engagement(t), "dt": _post_dates(t),
+        "author_handle": handles,
+        "author_name": names,
+        "eng": _engagement(t).to_numpy(), "dt": _post_dates(t).to_numpy(),
+        "norm": norms,
     })
     work["key"] = work["author_handle"].where(work["author_handle"] != "", work["author_name"]).str.lower()
     work = work[work["key"] != ""]
-    g = work.groupby("key").agg(
-        author_handle=("author_handle", "first"), author_name=("author_name", "first"),
-        threat_posts=("key", "size"), total_engagement=("eng", "sum"),
-        first_seen=("dt", "min"), last_seen=("dt", "max"))
-    g = g[g["threat_posts"] >= min_count]
+    rows = []
+    for _, part in work.groupby("key", sort=False):
+        count = _distinct_threats(part["norm"].tolist())
+        if count < min_count:
+            continue
+        rows.append({
+            "author_handle": part["author_handle"].iloc[0],
+            "author_name": part["author_name"].iloc[0],
+            "threat_posts": count,
+            "total_engagement": float(part["eng"].sum()),
+            "first_seen": part["dt"].min(),
+            "last_seen": part["dt"].max(),
+        })
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    g = pd.DataFrame(rows)
     return g.sort_values(["threat_posts", "total_engagement"], ascending=False).reset_index(drop=True)[cols]
 
 

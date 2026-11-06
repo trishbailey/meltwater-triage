@@ -13,9 +13,12 @@ see `NUMERIC_COLUMNS`) are kept and parsed as numbers.
 ## Logic
 - **Threat**: a threat-language term (`THREAT_TERMS`) AND a target term
   (`AUKUS_TARGET_TERMS` + `PERSON_ROLE_TERMS` + `PERSON_NAMES`) in the same post.
-- **Protest**: mobilization rules over action, call-to-action, disruption, organizer,
-  hashtag, logistics, date/time/address, past/future and inquiry cues. Union action
-  without AUKUS/defense context is excluded.
+- **Protest**: an invitation, or an action tied to a date or place. A high-confidence
+  event also needs a date and an Australian place (including Supreme Court Gardens in Perth).
+  Advocacy, a news or promotional digest, a policy warning, and a past recap are not protests.
+  Union action without AUKUS/defense context is excluded.
+- **Not a direct threat**: sarcasm or criticism, including "the old … trick" and "so someone
+  can bomb", and any threat the post attributes to someone else. A news digest is not a threat.
 - Matching is case-insensitive, whole word/phrase, over the text columns listed in
   `TEXT_COLUMN_OPTIONS`.
 
@@ -81,6 +84,12 @@ The export product name is never shown as the source.
 `python -m triage.backfill` prints a Haiku 4.5 price estimate for flagged posts
 that have no stored review. It does not call the API. A paid run stays refused
 unless an explicit approval value is set, and an estimate above $5 is refused.
+A reviewed code change is not that approval.
+
+`python -m triage.repair` prints a dry-run of the free rule correction for stored
+labels. It does not call the model and does not write. `python -m triage.repair --apply`
+writes those corrections, still with no model call and no row deletes. Paid
+reanalysis of old rows is a separate step and is not started from either command.
 
 The map is Australia only. Low zoom draws the Natural Earth 110m Australia
 outline on a dark navy ocean (public CARTO basemap tiles currently answer with
@@ -110,7 +119,7 @@ uploads and alert deletion reject cross-site Origin headers. For local http test
 
 - `POST /alerts/<id>/delete` (signed in): deletes one alert; the dashboard has a Delete button on each alert.
 - `/status` (password): stored rows by post month and flag type, upload runs, alert count, and posts sent for review this month against the monthly cap.
-- `/dashboard` (password): month selector; threat vs protest volume; month-over-month strip; written monthly summary; threat types by engagement; top targets and named people; recurring threat posters with drill-down; protest locations, topics and organizers; heated-topic ranking; early-warning layer.
+- `/dashboard`: map for the last 30 days with Threats and Protests toggles, then a Threats section and a Protests section. Each section has topic analysis, top targets, top authors, and flagged posts in a collapsed list. Older posts stay stored.
 - `POST /api/alerts` with `Authorization: Bearer $ALERT_INGEST_TOKEN` and a JSON body:
   `source` (x, bluesky, facebook, instagram, newsletter), `url`, `author`, `text`, `posted_at` (ISO 8601),
   `matched_terms` (list or `;`-separated), `signal_level` (critical, high, medium, low).

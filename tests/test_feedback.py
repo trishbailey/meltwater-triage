@@ -29,4 +29,4 @@ def test_relevance_same_origin_and_toggle(client):
                                      "text": "hello", "matched_terms": []},
                 headers={"Authorization": f"Bearer {TOKEN}"})
     html = client.get("/dashboard").get_data(as_text=True)
-    assert "show-hidden" in html and "Relevant" in html and "Not relevant" in html
+    assert "show-hidden" in html and "Flagged posts" in html

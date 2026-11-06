@@ -124,13 +124,6 @@ def create_app() -> Flask:
     # Render terminates TLS at one proxy hop; trust its X-Forwarded-For/Proto.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
-    @app.context_processor
-    def _inject_downloads():
-        try:
-            return {"recent_downloads": jobs.list_recent_downloads()}
-        except Exception:
-            return {"recent_downloads": []}
-
     @app.route("/login", methods=["GET", "POST"])
     def login():
         return redirect(_safe_next(request.values.get("next")))
@@ -234,30 +227,20 @@ def create_app() -> Flask:
     def dashboard():
         st = _storage()
         if st is None:
-            ctx = dash.build(pd.DataFrame(), map_days=30)
+            ctx = dash.build(pd.DataFrame())
         else:
-            days = request.args.get("map_days", "30")
-            try:
-                map_days = None if days in ("all", "") else max(1, min(3650, int(days)))
-            except ValueError:
-                map_days = 30
-            ctx = dash.build(st.load_posts(), st.load_alerts(), st.meltwater_first_seen(),
-                             month=request.args.get("month"), map_days=map_days)
+            ctx = dash.build(st.load_posts(), st.load_alerts(), st.meltwater_first_seen())
         return render_template("dashboard.html", **ctx)
 
     @app.get("/api/map")
     @require_password
     def api_map():
         st = _storage()
-        days = request.args.get("days", "30")
-        try:
-            map_days = None if days in ("all", "") else max(1, min(3650, int(days)))
-        except ValueError:
-            map_days = 30
+        from triage.dashboard import WINDOW_DAYS
         from triage.mapdata import build_map
         if st is None:
-            return build_map(pd.DataFrame(), None, days=map_days)
-        return build_map(st.load_posts(), st.load_alerts(limit=500), days=map_days)
+            return build_map(pd.DataFrame(), None, days=WINDOW_DAYS)
+        return build_map(st.load_posts(), st.load_alerts(limit=500), days=WINDOW_DAYS)
 
     @app.post("/alerts/<int:alert_id>/delete")
     @require_password

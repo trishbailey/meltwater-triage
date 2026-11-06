@@ -23,7 +23,8 @@ def test_mp_uppercase_only():
 def test_weak_threat_terms_need_nearby_target():
     far = "Attack on the bowling team was brutal " + "word " * 20 + "and AUKUS is in the news."
     assert screen_text(far, P)["category"] == ""
-    assert screen_text("They will attack HMAS Stirling", P)["category"] == "threat"
+    assert screen_text("We will attack HMAS Stirling", P)["category"] == "threat"
+    assert screen_text("They will attack HMAS Stirling", P)["category"] == ""
     assert screen_text("Hang the defence minister", P)["category"] == "threat"
     # strong terms still only need a target anywhere
     assert screen_text("I will bomb it. " + "word " * 20 + "AUKUS", P)["category"] == "threat"

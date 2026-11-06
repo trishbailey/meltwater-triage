@@ -5,21 +5,16 @@
 :root{--bg:#0b1526;--panel:#12203a;--panel2:#0f1b31;--line:#24365a;--text:#e6e9ef;--muted:#9aa6b8;--gold:#c8a24a;--red:#c0504d}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-.shell{display:flex;min-height:100vh;width:100%}
-.side{width:320px;flex:0 0 320px;background:var(--panel);border-right:1px solid var(--line);padding:14px;overflow:auto}
-.main{flex:1;min-width:0;padding:16px;width:100%}
+.shell{display:block;min-height:100vh;width:100%}
+.side{position:fixed;top:0;left:0;bottom:0;z-index:30;width:min(92vw,340px);background:var(--panel);border-right:1px solid var(--line);padding:14px;overflow:auto;transform:translateX(-105%);transition:transform .2s ease;box-shadow:0 0 24px rgba(0,0,0,.4)}
+body.drawer-open .side{transform:translateX(0)}
+body.drawer-open .backdrop{display:block}
+.main{min-width:0;padding:16px;width:100%}
 .side h2{font-size:16px;margin:0 0 8px}.side h3{font-size:14px;margin:14px 0 6px;color:var(--gold)}
 .side .card{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:0 0 12px}
 .side p{font-size:13px;color:var(--muted);margin:0 0 8px}
-.drawer-toggle{display:none;min-height:44px;padding:0 14px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--text);font:inherit;font-size:14px;cursor:pointer;margin:0 0 10px}
+.drawer-toggle{display:inline-flex;align-items:center;min-height:44px;padding:0 14px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--text);font:inherit;font-size:14px;cursor:pointer;margin:0 0 10px}
 .backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20}
-@media (max-width:720px){
-  .shell{display:block}
-  .drawer-toggle{display:inline-flex;align-items:center}
-  .side{position:fixed;top:0;left:0;bottom:0;z-index:30;transform:translateX(-105%);transition:transform .2s ease;width:min(92vw,340px);box-shadow:0 0 24px rgba(0,0,0,.4)}
-  body.drawer-open .side{transform:translateX(0)}
-  body.drawer-open .backdrop{display:block}
-}
 h1{font-size:24px;margin:4px 0 6px}h2{font-size:18px;margin:0 0 4px}h3{font-size:15px;margin:12px 0 6px}
 p{margin:6px 0}a{color:#7cc4ff}
 .intro{color:var(--text)}.note,.how{color:var(--muted);font-size:13px}
@@ -92,6 +87,8 @@ label{display:block;font-size:14px;margin:0 0 6px}
 .rel-btns .btn{min-height:40px;font-size:13px}
 .rel-btns .btn[aria-pressed=true]{border-color:var(--gold);background:var(--gold);color:#0b1526;font-weight:700}
 .item-hidden{opacity:.55;border-style:dashed}
+.post-body{white-space:pre-line;overflow-wrap:anywhere;margin:6px 0}
+details.clip[open] .clip-preview{display:none}
 .dl-list{list-style:none;padding:0;margin:0;font-size:13px}
 .dl-list li{margin:6px 0;word-break:break-word}
 
@@ -127,13 +124,7 @@ input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
 <label for="files">Export files</label>
 <input id="files" type="file" name="files" accept=".xlsx,.csv" multiple required>
 <p style="margin-top:10px"><button class="btn primary" type="submit">Screen posts</button></p></form>
-</div>
-<div class="card" id="recent-downloads"{% if not recent_downloads %} hidden{% endif %}>
-<h3>Recent Excel exports</h3>
-<p>Downloads from finished uploads (kept for 7 days).</p>
-<ul class="dl-list">{% for d in recent_downloads %}
-<li data-job="{{ d.id }}"><a href="/jobs/{{ d.id }}/download">{{ d.filenames or "Flagged posts" }}</a></li>
-{% endfor %}</ul>
+<p id="current-download" hidden></p>
 </div>
 <p><a href="/status">Usage and storage status</a></p>
 </aside>
@@ -147,7 +138,6 @@ input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
 b.addEventListener("click",function(){var open=document.body.classList.toggle("drawer-open");b.setAttribute("aria-expanded",open?"true":"false");});
 })();
 </script>
-<script src="{{ url_for('static', filename='recent-exports.js') }}"></script>
 {% include "_progress.html" %}
 <script>
 (function(){
@@ -166,8 +156,9 @@ function mark(btn){
   }).catch(function(){alert("Could not save label");});
 }
 function applyHide(){
-  var show=document.getElementById("show-hidden");
-  var on=show && show.checked;
+  var boxes=document.querySelectorAll(".show-hidden");
+  var on=false;
+  boxes.forEach(function(box){ if(box.checked) on=true; });
   document.querySelectorAll("[data-item-type]").forEach(function(el){
     var hid=el.dataset.label==="not_relevant";
     el.hidden=hid && !on;
@@ -176,8 +167,9 @@ function applyHide(){
 document.addEventListener("click",function(e){
   var b=e.target.closest(".rel-btns .btn"); if(b){e.preventDefault();mark(b);}
 });
-var show=document.getElementById("show-hidden");
-if(show) show.addEventListener("change", applyHide);
+document.addEventListener("change",function(e){
+  if(e.target && e.target.classList && e.target.classList.contains("show-hidden")) applyHide();
+});
 applyHide();
 })();
 </script>

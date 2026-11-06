@@ -1,25 +1,14 @@
 {% extends "_base.html" %}{% block title %}Threat and Protest Monitor{% endblock %}{% block body %}
-<p class="intro">Live picture of threat and protest signals from stored exports and monitored channels. Use <strong>Add data</strong> to upload a new export.</p>
 <h1>Threat and Protest Monitor</h1>
-<p class="note"><label><input type="checkbox" id="show-hidden"> Show items marked not relevant</label></p>
 
-<section class="panel" id="map-panel"><h2>Sites, protests and threats</h2>
-<p class="how">Australia only. All 16 sites stay on the map, with a label and an icon: anchor for naval and port, plane for air, building for headquarters, shipyard and industry, shield for army and base. The icon is a white glyph on blue.</p>
-<div class="map-filters" role="group" aria-label="Map time range">
-<button type="button" class="btn map-range" data-days="7">Last 7 days</button>
-<button type="button" class="btn map-range" data-days="30" aria-current="true">Last 30 days</button>
-<button type="button" class="btn map-range" data-days="90">Last 90 days</button>
-<button type="button" class="btn map-range" data-days="all">All time</button>
-</div>
-<div class="map-filters" role="group" aria-label="Map layers">
+<section class="panel" id="map-panel"><h2>Map</h2>
+<p class="how">Last 30 days. Sites stay labeled on the map. Older posts stay stored.</p>
+<div class="map-filters" role="group" aria-label="Map data">
 <button type="button" class="btn map-layer" data-layer="threats" aria-pressed="true">Threats</button>
-<button type="button" class="btn map-layer" data-layer="past" aria-pressed="true">Past protests</button>
-<button type="button" class="btn map-layer" data-layer="planned" aria-pressed="true">Planned protests</button>
-<button type="button" class="btn map-layer" data-layer="advocacy" aria-pressed="true">Advocacy</button>
+<button type="button" class="btn map-layer" data-layer="protests" aria-pressed="true">Protests</button>
 </div>
 <div id="dash-map" class="dash-map" role="img" aria-label="Map of Australian sites, protests and threats"></div>
-<div class="legend" id="map-legend">{% for item in map.legend %}<span><i class="sw{% if item.swatch == 'hollow' %} hollow{% endif %}" style="{% if item.swatch == 'hollow' %}border-color:{{ item.color }}{% else %}background:{{ item.color }}{% endif %}"></i>{{ item.label }}</span>{% endfor %}
-<span class="note" id="map-count"></span></div>
+<p class="note" id="map-count"></p>
 <p class="note">Low zoom draws Natural Earth 110m land on a dark navy ocean. Zooming in switches to darkened OpenStreetMap streets. Land © Natural Earth. Streets © OpenStreetMap contributors.</p>
 </section>
 <script type="application/json" id="map-assets">{{ map.assets|tojson }}</script>
@@ -72,7 +61,7 @@ var glyphs={
 };
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];});}
 var assetLayer=L.layerGroup().addTo(map), eventLayer=L.layerGroup().addTo(map), threatLayer=L.layerGroup().addTo(map);
-var layers={threats:true,past:true,planned:true,advocacy:true};
+var layers={threats:true,protests:true};
 var cache={events:[],threats:[]};
 function measureLabel(text){
   var el=measureLabel.el;
@@ -126,9 +115,8 @@ function renderEvents(){
   var n=0;
   (cache.events||[]).forEach(function(e){
     var kind=e.kind==="upcoming"?"planned":e.kind;
-    if(kind==="planned" && !layers.planned) return;
-    if(kind==="advocacy" && !layers.advocacy) return;
-    if((kind==="past" || kind==="event") && !layers.past) return;
+    if(kind==="advocacy" || !kind) return;
+    if(!layers.protests) return;
     var hollow=kind==="planned" || e.style==="hollow";
     L.circleMarker([e.lat,e.lon],{radius:hollow?9:8, color:e.color, fillColor:e.color,
       fillOpacity:hollow?0:0.9, weight:hollow?2:1}).bindPopup(popup(e)).addTo(eventLayer);
@@ -143,16 +131,14 @@ function renderEvents(){
   }
   document.getElementById("map-count").textContent=n+" marker"+(n===1?"":"s")+" shown";
 }
-function load(days){
-  document.querySelectorAll(".map-range").forEach(function(b){b.setAttribute("aria-current", b.dataset.days===String(days)?"true":null);});
+function load(){
   document.getElementById("map-count").textContent="Loading…";
-  fetch("/api/map?days="+encodeURIComponent(days),{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(data){
+  fetch("/api/map?days=30",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(data){
     cache.events=data.events||[]; cache.threats=data.threats||[];
     renderEvents();
     setTimeout(function(){map.invalidateSize();},50);
   }).catch(function(){document.getElementById("map-count").textContent="Could not load map events.";});
 }
-document.querySelectorAll(".map-range").forEach(function(b){b.addEventListener("click",function(){load(b.dataset.days);});});
 document.querySelectorAll(".map-layer").forEach(function(b){
   b.addEventListener("click",function(){
     var on=b.getAttribute("aria-pressed")!=="true";
@@ -160,102 +146,82 @@ document.querySelectorAll(".map-layer").forEach(function(b){
     layers[b.dataset.layer]=on; renderEvents();
   });
 });
-load("{{ map.days if map.days is not none else 'all' }}");
+load();
 })();
 </script>
 
-<section class="panel" id="threat-ranking"><h2>Threat ranking</h2>
-{% if threat_chart and threat_chart.rows %}
-<p class="how">{{ threat_chart.grouping }}</p>
-{% if threat_chart.stored_types %}<p class="note">Stored types: {{ threat_chart.stored_types|join(", ") }}. Stored targets: {{ threat_chart.stored_targets|join(", ") }}.</p>{% endif %}
-<div class="bars">{% for row in threat_chart.rows %}
+{% macro bars(rows, color) %}
+{% if rows %}
+<div class="bars">{% for row in rows %}
 <div class="bar"><div class="lab">{{ row.label }}</div><div class="track" style="display:flex;align-items:center">
-<div class="fill" style="width:{{ row.pct }}%;background:{{ colors.threat }}"></div>
-<span class="val">{{ row.value }} post{{ "s" if row.value != 1 }} · {{ "{:,}".format(row.engagement) }} eng · {{ row.type }}</span>
+<div class="fill" style="width:{{ row.pct }}%;background:{{ color }}"></div>
+<span class="val">{{ row.value }} post{{ "s" if row.value != 1 }}{% if row.engagement %} · {{ "{:,}".format(row.engagement) }} eng{% endif %}</span>
 </div></div>{% endfor %}</div>
-{% else %}<p>No stored threat targets this month yet.</p>{% endif %}
-</section>
-
-<section class="panel" id="upcoming"><h2>Upcoming protests</h2>
-<p class="how">Planned protests are stored events with a place in Australia and a date after today. They stay listed when the map time range changes. The day buttons filter past markers only.</p>
-{% if upcoming %}
-{% for e in upcoming %}
-<div class="post"><strong>{{ e.date or "Date not stated" }}</strong> — {{ e.place }}
-<span class="src">{{ e.source }}</span>
-{{ e.text }}
-{% if e.url %} <a href="{{ e.url }}" rel="noopener noreferrer" target="_blank">Open source</a>{% endif %}
-</div>
-{% endfor %}
-{% else %}<p>No planned protests with a place and a future date are stored.</p>{% endif %}
-</section>
-
-{% if not has_data %}
-<div class="panel" id="volume"><h2>Monthly trend</h2><p>No uploads are stored yet. Upload an export to populate this dashboard.</p></div>
-{% else %}
-<nav class="months" aria-label="Month">{% for m in months %}<a href="?month={{ m.key }}"{% if m.key == month %} aria-current="page"{% endif %}>{{ m.label }}</a>{% endfor %}</nav>
-
-<section class="panel" id="volume"><h2>Monthly trend</h2>
-<div class="legend"><span><i class="sw" style="background:{{ colors.threat }}"></i>Threat posts</span><span><i class="sw" style="background:{{ colors.protest }}"></i>Protest posts</span></div>
-<div class="bars">{% for v in volume %}<div class="bar pair"><div class="lab">{{ v.label }}</div><div>
-<div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ v.threat_pct }}%;background:{{ colors.threat }}"></div><span class="val">{{ v.threat }} threat</span></div>
-<div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ v.protest_pct }}%;background:{{ colors.protest }}"></div><span class="val">{{ v.protest }} protest</span></div>
-</div></div>{% endfor %}</div>
-<p class="finding" id="narrative">{{ narrative }}</p>
-<p class="how">Counts use the stored category field. A post stored as both is counted in each bar. Category text is not renamed or merged.</p>
-</section>
-
-<section class="panel" id="flagged-posts"><h2>Flagged posts this month</h2>
-<p class="how">The post text sits beside Relevant and Not relevant. Not relevant items are hidden unless you show them.</p>
-{% if flagged_sample %}
-{% for post in flagged_sample %}
+{% else %}<p class="note">Nothing stored for this window.</p>{% endif %}
+{% endmacro %}
+{% macro one_post(post) %}
 {% set plabel = relevance_labels.get('post:' ~ (post.doc_id|string), '') %}
 <div class="post post-row {% if plabel=='not_relevant' %}item-hidden{% endif %}" data-item-type="post" data-item-id="{{ post.doc_id }}" data-source="{{ post.source }}" data-label="{{ plabel }}" {% if plabel=='not_relevant' %}hidden{% endif %}>
 <div class="post-text">
 {% if post.type %}<span class="tag">{{ post.type }}</span> {% endif %}
-<span class="src">{{ post.source }}</span>{% if post.publisher and post.publisher != post.source %} <span class="note">{{ post.publisher }}</span>{% endif %}
-<strong>{{ post.author or "Unknown" }}</strong>
-{{ post.text or post.summary }}
+<span class="src">{{ post.platform }}</span>
+{% if post.handle %}<strong>{{ post.handle }}</strong>{% else %}<span class="note">Handle not supplied</span>{% endif %}
+{% if post.when %}<span class="note">{{ post.when }}</span>{% else %}<span class="note">Date not supplied</span>{% endif %}
+{% if post.long %}<details class="clip"><summary><span class="clip-preview">{{ post.preview }}</span> <span class="note">Show full post</span></summary><p class="post-body">{{ post.text }}</p></details>{% elif post.text %}<p class="post-body">{{ post.text }}</p>{% else %}<p class="note">Post text not supplied</p>{% endif %}
 {% if post.link %} <a href="{{ post.link }}" rel="noopener noreferrer" target="_blank">Open post</a>{% endif %}
 </div>
 <div class="rel-btns" role="group" aria-label="Relevance">
 <button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if plabel=='relevant' else 'false' }}">Relevant</button>
 <button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if plabel=='not_relevant' else 'false' }}">Not relevant</button>
 </div></div>
-{% endfor %}
-{% else %}<p>No flagged posts this month.</p>{% endif %}
+{% endmacro %}
+
+<section class="panel" id="threats"><h2>Threats</h2>
+<h3 id="threat-topics">Threat topic analysis</h3>
+{{ bars(threat_topics, colors.threat) }}
+<h3 id="threat-targets">Top threat targets</h3>
+{% if threat_chart and threat_chart.rows %}
+<p class="how">{{ threat_chart.grouping }}</p>
+{{ bars(threat_chart.rows, colors.threat) }}
+{% else %}<p class="note">No stated threat targets in the last 30 days.</p>{% endif %}
+{% if threat_chart.unspecified %}<p class="note">{{ threat_chart.unspecified }} threat post{{ "s" if threat_chart.unspecified != 1 }} ha{{ "ve" if threat_chart.unspecified != 1 else "s" }} no stated target and {{ "are" if threat_chart.unspecified != 1 else "is" }} not ranked above.</p>{% endif %}
+<h3 id="threat-authors">Top threat authors</h3>
+{% if threat_authors %}
+<div class="bars">{% for a in threat_authors %}
+<div class="bar"><div class="lab">{{ a.handle or a.name }}</div><div class="track" style="display:flex;align-items:center">
+<div class="fill" style="width:{{ (100 * a.count / (threat_authors[0].count or 1))|round(1) }}%;background:{{ colors.threat }}"></div>
+<span class="val">{{ a.count }} distinct post{{ "s" if a.count != 1 }}</span>
+</div></div>{% endfor %}</div>
+{% else %}<p class="note">No threat authors in the last 30 days.</p>{% endif %}
+<details id="threat-posts"><summary>Flagged posts</summary>
+<div class="body">
+<p class="note"><label><input type="checkbox" class="show-hidden" id="show-hidden"> Show items marked not relevant</label></p>
+{% if flagged_sample %}{% for post in flagged_sample %}{{ one_post(post) }}{% endfor %}
+{% else %}<p>No flagged threat posts in the last 30 days.</p>{% endif %}
+</div></details>
 </section>
 
-<section class="panel" id="posters"><h2>Recurring threat posters</h2>
-{% if posters %}<p class="how">Accounts with two or more threat posts this month.</p>
-{% for p in posters %}<details><summary><strong>{{ p.name or p.handle }}</strong>{% if p.handle and p.name %} ({{ p.handle }}){% endif %}: {{ p.count }} threat posts, {{ "{:,}".format(p.engagement) }} engagements</summary>
-<div class="body"><p class="note">First seen {{ p.first }}, last seen {{ p.last }}</p>
-{% for post in p.posts %}
-{% set pid = post.doc_id or '' %}
-{% set plabel = relevance_labels.get('post:' ~ pid, '') if pid else '' %}
-<div class="post post-row {% if plabel=='not_relevant' %}item-hidden{% endif %}" {% if pid %}data-item-type="post" data-item-id="{{ pid }}" data-source="{{ post.source }}" data-label="{{ plabel }}"{% if plabel=='not_relevant' %} hidden{% endif %}{% endif %}>
-<div class="post-text">{% if post.type %}<span class="tag">{{ post.type }}</span> {% endif %}<span class="src">{{ post.source }}</span>{{ post.text or post.summary }}{% if post.link %} <a href="{{ post.link }}" rel="noopener noreferrer" target="_blank">Open post</a>{% endif %}</div>
-{% if pid %}<div class="rel-btns" role="group" aria-label="Relevance"><button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if plabel=='relevant' else 'false' }}">Relevant</button>
-<button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if plabel=='not_relevant' else 'false' }}">Not relevant</button></div>{% endif %}
-</div>{% endfor %}
-</div></details>{% endfor %}{% else %}<p>No account posted threat language more than once this month.</p>{% endif %}</section>
-{% endif %}
-
-<section class="panel" id="early-warning"><h2>Early warning from monitored channels</h2>
-<p class="how">Alerts from monitored channels are kept separate. They are not added to the threat, protest, or monthly totals above.</p>
-{% if alerts['items'] %}
-<p class="finding">{{ alerts.total }} alert{{ "s" if alerts.total != 1 }}; {{ alerts.confirmed }} later matched a stored export{% if alerts.median_lead %}, a median {{ alerts.median_lead }} earlier{% endif %}.</p>
-<div class="bars">{% for b in alerts.by_source %}<div class="bar"><div class="lab">{{ b.label }}</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ b.pct }}%;background:{{ b.color }}"></div><span class="val">{{ b.value }} alert{{ "s" if b.value != 1 }}</span></div></div>{% endfor %}</div>
-{% for a in alerts['items'] %}
-{% set alabel = relevance_labels.get('alert:' ~ (a.id|string), '') %}
-<details class="{{ 'item-hidden' if alabel == 'not_relevant' else '' }}" data-item-type="alert" data-item-id="{{ a.id }}" data-source="{{ a.source }}" data-label="{{ alabel }}" {% if alabel == 'not_relevant' %}hidden{% endif %}><summary><span class="chip" style="background:{{ signal_colors[a.signal_level] }}">{{ a.signal_level|capitalize }}</span>
-<span class="chip" style="background:{{ source_colors[a.source] }}">{{ source_labels[a.source] }}</span>
-{{ a.author or "Unknown author" }}{% if a.confirmed %} <span class="ok">Matched a stored export{% if a.lead %}, {{ a.lead }} earlier{% endif %}</span>{% endif %}</summary>
-<div class="body"><p class="note">First seen {{ a.first_seen }}</p>
-<div class="post-row"><div class="post-text">{% if a.text %}<p style="white-space:pre-line;overflow-wrap:anywhere">{{ a.text }}</p>{% endif %}</div>
-<div class="rel-btns" role="group" aria-label="Relevance"><button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if alabel=='relevant' else 'false' }}">Relevant</button>
-<button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if alabel=='not_relevant' else 'false' }}">Not relevant</button></div></div>
-{% for t in a.terms %}<span class="tag">{{ t }}</span>{% endfor %}
-{% if a.url %}<p><a href="{{ a.url }}" rel="noopener noreferrer" target="_blank">Open source post</a></p>{% endif %}
-<form method="post" action="/alerts/{{ a.id }}/delete" onsubmit="return confirm('Delete this alert?')"><button class="btn danger" type="submit">Delete alert</button></form></div></details>{% endfor %}
-{% else %}<p>No early-warning alerts received yet.</p>{% endif %}</section>
+<section class="panel" id="protests"><h2>Protests</h2>
+<h3 id="protest-topics">Protest topic analysis</h3>
+{{ bars(protest_topics, colors.protest) }}
+<h3 id="protest-targets">Top protest targets</h3>
+{% if protest_chart and protest_chart.rows %}
+<p class="how">{{ protest_chart.grouping }}</p>
+{{ bars(protest_chart.rows, colors.protest) }}
+{% else %}<p class="note">No stated protest targets in the last 30 days.</p>{% endif %}
+{% if protest_chart.unspecified %}<p class="note">{{ protest_chart.unspecified }} protest post{{ "s" if protest_chart.unspecified != 1 }} ha{{ "ve" if protest_chart.unspecified != 1 else "s" }} no stated target and {{ "are" if protest_chart.unspecified != 1 else "is" }} not ranked above.</p>{% endif %}
+<h3 id="protest-authors">Top protest authors</h3>
+{% if protest_authors %}
+<div class="bars">{% for a in protest_authors %}
+<div class="bar"><div class="lab">{{ a.handle or a.name }}</div><div class="track" style="display:flex;align-items:center">
+<div class="fill" style="width:{{ (100 * a.count / (protest_authors[0].count or 1))|round(1) }}%;background:{{ colors.protest }}"></div>
+<span class="val">{{ a.count }} distinct post{{ "s" if a.count != 1 }}</span>
+</div></div>{% endfor %}</div>
+{% else %}<p class="note">No protest authors in the last 30 days.</p>{% endif %}
+<details id="protest-posts"><summary>Flagged protest posts</summary>
+<div class="body">
+{% if protest_posts %}{% for post in protest_posts %}{{ one_post(post) }}{% endfor %}
+{% else %}<p>No flagged protest posts in the last 30 days.</p>{% endif %}
+</div></details>
+</section>
 {% endblock %}

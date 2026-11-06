@@ -254,6 +254,9 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
         flagged = flagged.merge(screened[[_ROW_ID, *heat_cols]], on=_ROW_ID, how="left")
     screened = _drop_row_id(screened)
     flagged = _drop_row_id(flagged).reset_index(drop=True)
+    from .judgment import apply_judgment_df
+    from .textnorm import dedupe_posts
+    flagged = dedupe_posts(apply_judgment_df(flagged))
     res = Result(flagged=flagged, all_posts=screened,
                  posters=recurring_threat_posters(flagged), topics=heat_by_topic(screened),
                  screened_rows=total)

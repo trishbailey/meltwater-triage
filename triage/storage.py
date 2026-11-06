@@ -206,14 +206,34 @@ class Storage:
         week, month = iso_week(now.date()), now.strftime("%Y-%m")
         flags = rows["is_flagged"] if "is_flagged" in rows else pd.Series(True, index=rows.index)
         heat_n = int(rows["heat_score"].notna().sum()) if "heat_score" in rows else 0
+        from .textnorm import storage_dedupe_key
         with self.engine.begin() as conn:
             run_id = conn.execute(runs.insert().values(
                 created_at=now, upload_week=week, upload_month=month,
                 filenames=json.dumps(filenames), rows_screened=rows_screened,
                 rows_flagged=int(flags.sum()), rows_heat_scored=heat_n)).inserted_primary_key[0]
+            known: dict[tuple, str] = {}
+            for old_id, old_link, old_data in conn.execute(
+                    select(posts.c.document_id, posts.c.link, posts.c.data)).all():
+                blob = dict(old_data or {})
+                if old_link and not blob.get("link"):
+                    blob["link"] = old_link
+                key = storage_dedupe_key(blob)
+                if key and key not in known:
+                    known[key] = old_id
             for rec in rows.to_dict(orient="records"):
                 data = {str(k): _jsonable(v) for k, v in rec.items()}
                 doc = _doc_id(data)
+                key = storage_dedupe_key(data)
+                # Same URL and same text, or the same author/text/day with no URL, is one post.
+                # A different URL is a cross-post and is stored on its own.
+                if key and key in known and known[key] != doc:
+                    existing = conn.execute(
+                        select(posts.c.document_id).where(posts.c.document_id == doc)).first()
+                    if not existing:
+                        doc = known[key]
+                if key:
+                    known.setdefault(key, doc)
                 dt = pd.to_datetime(_lc(data, "date"), errors="coerce")
                 has_dt = not pd.isna(dt)
                 from .origin import origin_label, publisher_label
