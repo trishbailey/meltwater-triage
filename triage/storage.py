@@ -85,6 +85,12 @@ alerts = Table(
     Column("signal_level", String(16), nullable=False),
 )
 
+alert_reviews = Table(
+    "alert_reviews", metadata,
+    Column("alert_id", Integer, primary_key=True),
+    Column("data", JSON, nullable=False),  # review fields: is_genuine, refined_category, analysis
+)
+
 _NUMERIC_ID = re.compile(r"-?\d+\.0+")
 
 
@@ -535,6 +541,29 @@ class Storage:
             return pd.DataFrame([dict(r) for r in conn.execute(q).mappings().all()],
                                 columns=[c.name for c in alerts.columns])
 
+    def load_alert_reviews(self) -> dict[int, dict]:
+        with self.engine.connect() as conn:
+            return {r[0]: (r[1] if isinstance(r[1], dict) else {})
+                    for r in conn.execute(select(alert_reviews.c.alert_id, alert_reviews.c.data)).all()}
+
+    def merge_alert_reviews(self, reviews: dict[int, dict]) -> int:
+        """Merge review fields into the stored review of each alert (created when missing)."""
+        n = 0
+        with self.engine.begin() as conn:
+            for aid, rec in reviews.items():
+                new = {str(k): _jsonable(v) for k, v in rec.items() if v not in (None, "")}
+                if not new:
+                    continue
+                old = conn.execute(select(alert_reviews.c.data).where(alert_reviews.c.alert_id == aid)).first()
+                if old:
+                    merged = dict(old[0] or {})
+                    merged.update(new)
+                    conn.execute(alert_reviews.update().where(alert_reviews.c.alert_id == aid).values(data=merged))
+                else:
+                    conn.execute(alert_reviews.insert().values(alert_id=aid, data=new))
+                n += 1
+        return n
+
     def meltwater_first_seen(self) -> dict:
         """Normalized post URL -> when the post first arrived via a Meltwater upload."""
         from .alerts import normalize_url
@@ -562,4 +591,5 @@ class Storage:
 
     def delete_alert(self, alert_id: int) -> bool:
         with self.engine.begin() as conn:
+            conn.execute(alert_reviews.delete().where(alert_reviews.c.alert_id == alert_id))
             return conn.execute(alerts.delete().where(alerts.c.id == alert_id)).rowcount > 0

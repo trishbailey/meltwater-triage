@@ -140,3 +140,12 @@ The web service also runs the pull itself at 06:00 and 20:00 UTC (about 5 pm and
 `apify/facebook-posts-scraper` and `apify/instagram-post-scraper` (`APIFY_TOKEN`); the account lists are constants in `triage/collect.py`.
 Bluesky searches use `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD`. `COLLECT_WINDOW_HOURS` (default 16) sets the look-back.
 Posts are stored as alerts, pre-sorted like uploads, and de-duplicated by URL. X is not wired yet.
+
+## Pipeline
+
+1. Posts arrive from Meltwater uploads, Seerist PDF uploads, and the scheduled Apify (Facebook, Instagram) and Bluesky pulls.
+2. The Python pre-sort keeps threat and protest candidates (`triage/filters.py`).
+3. Claude filters the candidates: keep or discard only, no analysis (`triage/refine.py`, filter mode). Stored posts and collected alerts are both filtered (`triage/stages.py`).
+4. The dashboard lists the survivors in clusters of similar posts (`triage/grouping.py`). One mark on a cluster labels every post in it, and new posts that match a judged cluster inherit its label (`triage/propagate.py`).
+5. Claude receives the analyst's judgments as examples (one per pattern) in every filter prompt.
+6. Topic and target analysis (Claude, analyze mode), the map, and both Excel downloads use only posts marked Relevant. Analysis runs in the background after posts are marked Relevant.

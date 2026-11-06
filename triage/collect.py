@@ -160,9 +160,9 @@ def collect(storage, fetch=_http, env=None, now: datetime | None = None) -> dict
 
 
 def review_backlog(storage) -> int:
-    """Have Claude review flagged posts that have no stored review yet (respects the monthly cap)."""
-    from .pipeline import backfill_flagged
-    return backfill_flagged(storage)
+    """Claude filters candidates not yet judged, then analyzes approved ones (monthly cap applies)."""
+    from .stages import run_all
+    return run_all(storage)
 
 
 def _slot(now: datetime, hours: list[int]) -> str:
@@ -203,7 +203,7 @@ def start_scheduler(storage, logger=log, env=None, sleep=None):
             except Exception:  # noqa: BLE001
                 logger.exception("collection %s failed", slot)
             try:
-                logger.info("review %s: %d posts reviewed", slot, review_backlog(storage))
+                logger.info("review %s: %s", slot, review_backlog(storage))
             except Exception:  # noqa: BLE001
                 logger.exception("review %s failed", slot)
 

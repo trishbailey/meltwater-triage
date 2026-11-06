@@ -33,7 +33,7 @@ def cutoff(days: int | None = None, now: datetime | None = None) -> datetime:
     return max(first, (now or datetime.now(timezone.utc)) - timedelta(days=days))
 
 
-def _alert_rows(alerts: pd.DataFrame, since: datetime) -> pd.DataFrame:
+def _alert_rows(alerts: pd.DataFrame, since: datetime, reviews: dict | None = None) -> pd.DataFrame:
     """Alerts in the column layout of a stored post, pre-sorted like an upload."""
     if alerts is None or alerts.empty:
         return pd.DataFrame()
@@ -61,13 +61,19 @@ def _alert_rows(alerts: pd.DataFrame, since: datetime) -> pd.DataFrame:
     from .filters import screen_dataframe
     screened = screen_dataframe(df.drop(columns=["_url_key"]))
     screened["_url_key"] = df["_url_key"].to_numpy()
+    if reviews:  # Claude's stored verdict and analysis for each alert
+        recs = screened.to_dict(orient="records")
+        for rec in recs:
+            rec.update(reviews.get(int(rec["item_id"])) or {})
+        screened = pd.DataFrame(recs)
     return screened[screened["category"].fillna("") != ""].reset_index(drop=True)
 
 
-def combine(posts: pd.DataFrame | None, alerts: pd.DataFrame | None, since: datetime) -> pd.DataFrame:
+def combine(posts: pd.DataFrame | None, alerts: pd.DataFrame | None, since: datetime,
+            reviews: dict | None = None) -> pd.DataFrame:
     """Stored flagged posts plus screened alerts, newest window only."""
     base = posts if posts is not None else pd.DataFrame()
-    extra = _alert_rows(alerts, since)
+    extra = _alert_rows(alerts, since, reviews)
     if not extra.empty and not base.empty:
         link_cols = [c for c in ("link", "URL") if c in base.columns]
         seen = set()
@@ -87,4 +93,9 @@ def load(storage, days: int | None = None, now: datetime | None = None) -> pd.Da
     if storage is None:
         return pd.DataFrame()
     since = cutoff(days, now)
-    return combine(storage.load_posts(flagged_only=True, since=since), storage.load_alerts(limit=500), since)
+    try:
+        reviews = storage.load_alert_reviews()
+    except Exception:
+        reviews = {}
+    return combine(storage.load_posts(flagged_only=True, since=since), storage.load_alerts(limit=500), since,
+                   reviews)

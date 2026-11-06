@@ -41,12 +41,32 @@ VALID_SEVERITY = {"low", "medium", "high", "critical"}
 _CONTEXT = (
     "You review social media and news posts about the AUKUS defense program in Australia. A "
     "keyword pre-sort flagged each post below as a possible {what}. Decide whether the flag is "
-    "genuine. Return JSON {{\"results\": [{{...}}]}} with one result per input id. Use American "
-    "spelling. Leave out any field that has no value, so replies stay short."
+    "genuine. This is a filter only: do no analysis. Return JSON {{\"results\": [{{...}}]}} with one "
+    "result per input id."
 )
+_ANALYSIS_CONTEXT = (
+    "You analyze social media and news posts about the AUKUS defense program in Australia. An "
+    "analyst confirmed each post below as a genuine {what}. Extract the fields. Return JSON "
+    "{{\"results\": [{{...}}]}} with one result per input id. Use American spelling. Leave out any "
+    "field that has no value, so replies stay short."
+)
+_THREAT_GENUINE = ("\"is_genuine\": bool (true only for violence, sabotage, intimidation, or "
+                   "harassment aimed at the program, its facilities, or people)")
+_PROTEST_GENUINE = ("\"is_genuine\": bool (true only when the post announces or calls for a specific "
+                    "rally, march, blockade, or direct action, or reports one from the last week, and gives at "
+                    "least one of a date, a place, or an organizer. false for petitions, submissions to "
+                    "inquiries, opinion, news commentary, general opposition to AUKUS, reshares with no new "
+                    "detail, and recaps of events older than a week)")
+_THREAT_FILTER = "\"id\": int, " + _THREAT_GENUINE
+_PROTEST_FILTER = "\"id\": int, " + _PROTEST_GENUINE
+_BOTH_FILTER = ("\"id\": int, \"is_genuine\": bool (true when the post is a genuine threat as defined "
+                "below or a genuine protest call as defined below), \"refined_category\": \"threat\"|"
+                "\"protest\"|\"both\"|\"none\". Threat: violence, sabotage, intimidation, or harassment "
+                "aimed at the program, its facilities, or people. Protest: announces or calls for a specific "
+                "rally, march, blockade, or direct action, or reports one from the last week, with a date, "
+                "place, or organizer; petitions, opinion, commentary, and reshares are not protests")
 _THREAT_FIELDS = (
-    "\"id\": int, \"is_genuine\": bool (true only for violence, sabotage, intimidation, or "
-    "harassment aimed at the program, its facilities, or people), \"severity\": "
+    "\"id\": int, \"severity\": "
     "\"low\"|\"medium\"|\"high\"|\"critical\", \"threat_type\": one of \"violence\"|"
     "\"death threat\"|\"bombing or arson\"|\"sabotage\"|\"doxxing\"|\"harassment\"|"
     "\"call to disruption\"|\"other\", \"targets\": [people, groups, places, or institutions the "
@@ -54,32 +74,32 @@ _THREAT_FIELDS = (
     "\"theme\": string (2-5 words), \"narrative_summary\": string (max 20 words)"
 )
 _PROTEST_FIELDS = (
-    "\"id\": int, \"is_genuine\": bool (true only when the post announces or calls for a specific "
-    "rally, march, blockade, or direct action, or reports one from the last week, and gives at least one "
-    "of a date, a place, or an organizer. false for petitions, submissions to inquiries, opinion, news "
-    "commentary, general opposition to AUKUS, reshares with no new detail, and recaps of events older than "
-    "a week), \"protest_topic\": exactly one of \"" + "\"|\"".join(PROTEST_TOPICS) + "\", "
+    "\"id\": int, \"protest_topic\": exactly one of \"" + "\"|\"".join(PROTEST_TOPICS) + "\", "
     "\"protest_location\": string (city, region, or site), \"organizers_or_groups\": [who is behind it], "
     "\"targets\": [short names of what the protest is aimed at, one name per target, e.g. AUKUS, "
     "Australian Government, HMAS Stirling], \"event_date\": string (only if stated), "
     "\"scale_or_turnout\": string (only if stated), \"narrative_summary\": string (max 20 words)"
 )
 _BOTH_FIELDS = (
-    "\"id\": int, \"is_genuine\": bool, \"refined_category\": \"threat\"|\"protest\"|\"both\"|"
-    "\"none\", plus every threat field (severity, threat_type, targets, named_individuals, "
+    "\"id\": int, plus every threat field (severity, threat_type, targets, named_individuals, "
     "theme) and every protest field (protest_topic, protest_location, organizers_or_groups, "
     "event_date, scale_or_turnout) that applies, and \"narrative_summary\": string (max 20 words)"
 )
 PROMPT_KINDS = {
-    "threat": ("threat (violence, sabotage, or intimidation)", _THREAT_FIELDS),
-    "protest": ("protest or mobilization (a call to rally, blockade, or direct action)", _PROTEST_FIELDS),
-    "both": ("threat and protest mobilization", _BOTH_FIELDS),
+    "threat": ("threat (violence, sabotage, or intimidation)", _THREAT_FILTER, _THREAT_FIELDS),
+    "protest": ("protest or mobilization (a call to rally, blockade, or direct action)", _PROTEST_FILTER,
+                _PROTEST_FIELDS),
+    "both": ("threat and protest mobilization", _BOTH_FILTER, _BOTH_FIELDS),
 }
 
 
-def system_prompt(kind: str) -> str:
-    what, fields = PROMPT_KINDS[kind]
-    return _CONTEXT.format(what=what) + " Each result has: {" + fields + "}."
+def system_prompt(kind: str, mode: str = "filter") -> str:
+    """mode "filter": keep or discard only. mode "analyze": topic, targets and the rest, for
+    posts an analyst already marked relevant."""
+    what, filter_fields, analysis_fields = PROMPT_KINDS[kind]
+    if mode == "analyze":
+        return _ANALYSIS_CONTEXT.format(what=what) + " Each result has: {" + analysis_fields + "}."
+    return _CONTEXT.format(what=what) + " Each result has: {" + filter_fields + "}."
 
 
 SYSTEM_PROMPT = system_prompt("both")
@@ -247,29 +267,37 @@ def _absorb(results: dict, reply_text: str, clean) -> None:
 
 
 def few_shot_block(storage=None) -> str:
-    """Compact analyst-labeled examples for the prompt. Built once per run, not per batch."""
+    """Analyst-labeled examples for the prompt, one per cluster of similar posts. Built once per run."""
     try:
         from . import feedback as fb
+        from .grouping import group_indices
         from .storage import Storage, persistence_enabled
         if not persistence_enabled():
             return ""
-        labeled = {lab: [r for r in fb.recent_examples(lab, limit=12) if r["item_type"] == "post"]
-                   for lab in ("relevant", "not_relevant")}
-        ids = [str(r["item_id"]) for rows in labeled.values() for r in rows]
-        if not ids:
-            return ""
-        by_id = (storage or Storage()).posts_for_ids(ids)
+        store = storage or Storage()
+        labeled = {lab: fb.recent_examples(lab, limit=120) for lab in ("relevant", "not_relevant")}
+        post_ids = [str(r["item_id"]) for rows in labeled.values() for r in rows if r["item_type"] == "post"]
+        by_id = store.posts_for_ids(post_ids) if post_ids else {}
+        alert_text = {}
+        if any(r["item_type"] == "alert" for rows in labeled.values() for r in rows):
+            adf = store.load_alerts(limit=500)
+            alert_text = {str(r["id"]): str(r.get("text") or "") for r in adf.to_dict(orient="records")}
         lines = []
-        for lab, title in (("relevant", "RELEVANT"), ("not_relevant", "NOT RELEVANT")):
-            block = []
+        for lab, title in (("relevant", "RELEVANT (keep)"), ("not_relevant", "NOT RELEVANT (discard)")):
+            texts = []
             for row in labeled[lab]:
-                data = by_id.get(str(row["item_id"])) or {}
-                text = str(data.get("Hit Sentence") or data.get("narrative_summary") or "")[:180]
-                if text:
-                    block.append("- " + text.replace("\n", " "))
-            if block:
-                lines += [title + ":"] + block
-        return "\n".join(lines)[:2500]
+                if row["item_type"] == "alert":
+                    t = alert_text.get(str(row["item_id"]), "")
+                else:
+                    data = by_id.get(str(row["item_id"])) or {}
+                    t = str(data.get("Hit Sentence") or data.get("narrative_summary") or "")
+                t = t.replace("\n", " ").strip()
+                if t:
+                    texts.append(t[:240])
+            keep = [g[0] for g in group_indices(texts)][:30]  # one example per pattern
+            if keep:
+                lines += [title + ":"] + ["- " + texts[i] for i in keep]
+        return "\n".join(lines)[:8000]
     except Exception:
         return ""
 
@@ -281,7 +309,7 @@ def _kind_of(category) -> str:
 
 def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None = None,
            batch_size: int | None = None, budget=None, progress=None,
-           examples: str | None = None) -> pd.DataFrame:
+           examples: str | None = None, mode: str = "filter") -> pd.DataFrame:
     """Add REFINE_COLUMNS to `flagged`. Returns input unchanged if disabled.
 
     Posts are grouped by category so each batch gets the prompt, and the reply size, for
@@ -307,7 +335,9 @@ def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None =
         by_kind.setdefault(_kind_of(rec.get("category")), []).append(i)
     jobs = []
     for kind, ids in by_kind.items():
-        system = system_prompt(kind) + (("\n\nLabeled examples from the analyst:\n" + tip) if tip else "")
+        system = system_prompt(kind, mode) + (
+            ("\n\nThe analyst's own judgments follow. Keep posts like the RELEVANT examples and discard posts "
+             "like the NOT RELEVANT examples:\n" + tip) if tip and mode == "filter" else "")
         for start in range(0, len(ids), batch_size):
             chunk_ids = ids[start:start + batch_size]
             allowed = budget.take(len(chunk_ids))  # reserved serially so the caps hold
