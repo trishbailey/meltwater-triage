@@ -216,9 +216,12 @@ class Storage:
                 doc = _doc_id(data)
                 dt = pd.to_datetime(_lc(data, "date"), errors="coerce")
                 has_dt = not pd.isna(dt)
-                from .origin import origin_label
+                from .origin import origin_label, publisher_label
                 origin = origin_label(data)
+                publisher = publisher_label(data)
                 data["origin_source"] = origin
+                if publisher:
+                    data["publisher"] = publisher
                 values = dict(
                     last_run_id=run_id,
                     post_date=dt.to_pydatetime() if has_dt else None,

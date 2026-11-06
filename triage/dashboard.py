@@ -174,7 +174,7 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
 
     posters = recurring_threat_posters(t, min_count=2) if not t.empty else pd.DataFrame()
     text_cols = [_col(df, c) for c in ("hit sentence", "opening text", "title")]
-    from .origin import origin_label
+    from .origin import origin_label, publisher_label
     sample = t.sort_values("eng", ascending=False).head(25) if not t.empty else t
     ctx["flagged_sample"] = [{
         "doc_id": r.get("document_id") or r.get("Document ID"),
@@ -184,6 +184,7 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
         "link": r.get("link") or r.get("URL") or r.get("url"),
         "author": r.get("author_handle") or r.get("author_name") or "",
         "source": origin_label(r.to_dict()),
+        "publisher": publisher_label(r.to_dict()),
     } for _, r in sample.iterrows()]
     hc, nc = _col(t, "author handle"), _col(t, "author name")
     plist = []

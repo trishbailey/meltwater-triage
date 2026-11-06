@@ -83,6 +83,28 @@ def test_same_text_retweet_reuses_classification_in_one_file(tmp_path, monkeypat
     assert len(res.flagged) >= 2
 
 
+def test_heat_collapses_same_file_url_and_text(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MONTHLY_POST_CAP", raising=False)
+    monkeypatch.setenv("HEAT_MAX_POSTS", "50")
+    st = Storage(f"sqlite:///{tmp_path/'h.db'}")
+    text = "We will kill the AUKUS deal and bomb the base on Saturday at the harbour"
+    data = _book([
+        {"Document ID": "H1", "URL": "https://x.com/a/1", "Engagement": 10, "Hit Sentence": text},
+        {"Document ID": "H2", "URL": "https://x.com/a/1", "Engagement": 4,
+         "Hit Sentence": text + " and bring a banner to the gate"},
+        {"Document ID": "H3", "URL": "https://x.com/b/9", "Engagement": 3, "Hit Sentence": text},
+    ])
+    calls = []
+    res = process([("h.xlsx", data)], refine_fn=_fake(calls), heat_fn=_fake(calls), storage=st)
+    heat_n = sum(n for k, n, *_ in calls if k == "heat")
+    assert heat_n == 1, calls
+    assert len(res.all_posts) == 3
+    heated = res.all_posts["heat_sampled"].fillna(False).astype(bool)
+    assert heated.sum() == 3
+
+
 def test_fingerprint_helper_ignores_urls_and_case():
     from triage.reuse import text_fingerprint, normalize_text
     a = text_fingerprint("Kill the AUKUS submarine deal at Stirling https://example.com/x now please")

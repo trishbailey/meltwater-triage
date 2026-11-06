@@ -20,9 +20,14 @@ def _book(rows):
 
 
 def test_origin_never_names_the_export_tool():
+    from triage.origin import publisher_label
     assert origin_label({"Source": "Meltwater", "URL": "https://www.twitter.com/a/status/9"}) == "X"
     assert origin_label({"Source": "News", "URL": "https://www.abc.net.au/news/story"}) == "abc.net.au"
-    assert origin_label({"Source Name": "The Guardian", "URL": "https://x.com/a/1"}) == "The Guardian"
+    # A social URL is the platform. The outlet name stays on the publisher, not the source.
+    assert origin_label({"Source Name": "The Guardian", "URL": "https://x.com/a/1"}) == "X"
+    assert publisher_label({"Source Name": "The Guardian", "URL": "https://x.com/a/1"}) == "The Guardian"
+    assert origin_label({"Source": "The Guardian", "URL": "https://www.theguardian.com/world/story"}) == "The Guardian"
+    assert origin_label({"Source Name": "ABC News", "URL": "https://www.abc.net.au/news/1"}) == "ABC News"
     assert "meltwater" not in origin_label({"Source": "Meltwater"}).lower()
     assert origin_label({}) == "Unknown source"
 
@@ -40,7 +45,8 @@ def test_source_backfill_keeps_rows_and_real_names(tmp_path):
             source_name="Meltwater", link="https://x.com/a/status/1", data=blob,
             post_month="2026-10"))
         # A real outlet name must survive.
-        blob2 = dict(blob, **{"Document ID": "p2", "Source": "ABC News"})
+        blob2 = dict(blob, **{"Document ID": "p2", "Source": "ABC News",
+                              "URL": "https://www.abc.net.au/x", "link": "https://www.abc.net.au/x"})
         conn.execute(posts.insert().values(
             document_id="p2", first_run_id=1, last_run_id=1, upload_week="2026-W40",
             upload_month="2026-10", is_flagged=True, category="protest",
@@ -285,3 +291,177 @@ def test_large_screen_drops_unneeded_rows_but_counts_them(monkeypatch, tmp_path)
     assert res.screened_rows == 6
     assert len(res.all_posts) < 6
     assert len(res.flagged) == 1
+
+
+def test_screen_bounds_retained_rows_per_chunk(monkeypatch):
+    monkeypatch.setenv("SCREEN_CHUNK_ROWS", "2")
+    monkeypatch.setenv("SCREEN_KEEP_ROWS", "3")
+    monkeypatch.setenv("HEAT_MAX_POSTS", "1")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    from triage import pipeline
+    rows = []
+    for i in range(8):
+        text = ("bomb HMAS Stirling tomorrow at the gate" if i == 0
+                else f"the weather is calm and quiet today item {i} outside")
+        rows.append({"Document ID": f"m{i}", "Date": "2026-11-01", "Engagement": 20 - i,
+                     "Hit Sentence": text, "URL": f"https://x.com/a/{i}"})
+    pipeline._peak_retained["n"] = 0
+    res = pipeline.process([("c.xlsx", _book(rows))],
+                           refine_fn=lambda s, u: '{"results": []}',
+                           heat_fn=lambda s, u: '{"results": []}')
+    assert res.screened_rows == 8
+    assert pipeline._peak_retained["n"] < 8
+    assert pipeline._peak_retained["n"] <= 3 + 2
+
+
+def test_crash_after_paid_batch_is_not_repeated(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MONTHLY_POST_CAP", raising=False)
+    monkeypatch.setenv("REFINE_BATCH_SIZE", "1")
+    monkeypatch.setenv("HEAT_MAX_POSTS", "0")
+    from triage.pipeline import process
+    first = "kill the AUKUS deal tomorrow at the gate"
+    second = "bomb HMAS Stirling next week in the yard"
+    data = _book([
+        {"Document ID": "P1", "URL": "https://x.com/a/1", "Engagement": 9, "Hit Sentence": first},
+        {"Document ID": "P2", "URL": "https://x.com/b/2", "Engagement": 8, "Hit Sentence": second},
+    ])
+
+    class Store:
+        def __init__(self):
+            self.rows = []
+
+        def load(self):
+            return list(self.rows)
+
+        def save(self, kind, records):
+            self.rows.extend(records)
+
+    store = Store()
+    calls = []
+
+    def fake(system, user):
+        calls.append(user)
+        posts = __import__("json").loads(user)["posts"]
+        return __import__("json").dumps({"results": [
+            {"id": p["id"], "is_genuine": True, "refined_category": "threat",
+             "severity": "low", "threat_type": "violence", "targets": ["AUKUS"],
+             "narrative_summary": "kept"} for p in posts]})
+
+    def progress(stage, done, total, **_extra):
+        if stage == "Reviewing flagged posts" and done > 0:
+            assert store.rows, "progress ran before the paid batch was saved"
+            raise RuntimeError("crash after paid batch")
+
+    with pytest.raises(RuntimeError, match="crash after paid batch"):
+        process([("a.xlsx", data)], refine_fn=fake, heat_fn=fake, progress=progress, checkpoint=store)
+    assert len(calls) == 1
+    assert first in calls[0]
+    assert any(r.get("document_id") == "P1" for r in store.rows)
+    calls.clear()
+    process([("a.xlsx", data)], refine_fn=fake, heat_fn=fake, checkpoint=store)
+    assert calls, "the unpaid post should still be reviewed"
+    assert all(first not in user for user in calls)
+    assert any(second in user for user in calls)
+
+
+def test_save_failure_keeps_recovery_inputs(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path/'save.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("JOB_DIR", str(tmp_path / "jobs"))
+    from triage.pipeline import SaveFailed
+    import triage.jobs as jobs
+    jobs._engine = None
+    jobs._engine_url = ""
+    jobs._jobs.clear()
+    jobs.JOB_DIR = tmp_path / "jobs"
+
+    def work(progress):
+        progress("Reviewing flagged posts", 1, 1)
+        raise SaveFailed("Results were not saved to the database. Completed reviews were kept.")
+
+    jid = jobs.start("screen", work, filenames="a.xlsx", inputs=[("a.xlsx", b"excel-bytes")])
+    for _ in range(50):
+        state = jobs.get(jid)["state"]
+        if state != "running":
+            break
+        time.sleep(0.05)
+    got = jobs.get(jid)
+    assert got["state"] == "error"
+    assert "not saved" in got["error"].lower()
+    assert jobs._load_inputs(jid) == [("a.xlsx", b"excel-bytes")]
+
+
+def test_input_store_failure_does_not_start_work(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path/'nostore.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    import triage.jobs as jobs
+    jobs._engine = None
+    jobs._engine_url = ""
+    jobs._jobs.clear()
+    jobs._eng()
+    with jobs._eng().begin() as conn:
+        conn.execute(text("DROP TABLE upload_job_inputs"))
+    with pytest.raises(jobs.InputNotStored):
+        jobs._store_inputs("missing", [("a.xlsx", b"abc")])
+    calls = []
+
+    def work(progress):
+        calls.append("started")
+        return {"payload": b"nope"}
+
+    def broken(jid, files):
+        raise jobs.InputNotStored("db down")
+
+    monkeypatch.setattr(jobs, "_store_inputs", broken)
+    with pytest.raises(jobs.InputNotStored):
+        jobs.start("screen", work, filenames="a.xlsx", inputs=[("a.xlsx", b"abc")])
+    time.sleep(0.15)
+    assert calls == []
+
+
+def test_live_lease_is_not_claimed_and_old_writes_are_fenced(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path/'lease.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    import triage.jobs as jobs
+    jobs._engine = None
+    jobs._engine_url = ""
+    jobs._jobs.clear()
+    jobs._worker_id = "worker-a"
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    with jobs._eng().begin() as conn:
+        conn.execute(jobs.jobs_table.insert().values(
+            id="live", kind="screen", state="running", stage="Reviewing flagged posts",
+            done=1, total=4, message="", error="", filenames="a.xlsx", rows=4,
+            has_download=0, started=past, updated=datetime.now(timezone.utc),
+            resume_token="worker-b", lease_until=future))
+        conn.execute(jobs.job_inputs.insert().values(
+            job_id="live", seq=0, filename="a.xlsx", body=b"file"))
+    started = []
+    stats = jobs.resume_pending(lambda files: (lambda progress: started.append(files) or {}))
+    assert stats == {"resumed": 0, "interrupted": 0}
+    assert started == []
+    assert jobs._update_db("live", {"stage": "stolen by a"}) is False
+    with jobs._eng().connect() as conn:
+        stage = conn.execute(text("SELECT stage FROM upload_jobs WHERE id='live'")).scalar()
+    assert stage == "Reviewing flagged posts"
+    # The lease has expired, so this worker may claim it, and only that token can write.
+    with jobs._eng().begin() as conn:
+        conn.execute(text("UPDATE upload_jobs SET lease_until = :past WHERE id='live'"),
+                     {"past": past.isoformat()})
+    stats = jobs.resume_pending(lambda files: (lambda progress: {"payload": b"ok", "message": "resumed"}))
+    assert stats["resumed"] == 1
+    for _ in range(40):
+        if jobs.get("live")["state"] != "running":
+            break
+        time.sleep(0.05)
+    jobs._jobs.pop("live", None)
+    jobs._worker_id = "worker-b"
+    assert jobs._update_db("live", {"stage": "old worker write", "state": "error", "error": "nope"}) is False
+    with jobs._eng().connect() as conn:
+        stage = conn.execute(text("SELECT stage, resume_token FROM upload_jobs WHERE id='live'")).one()
+    assert stage[0] != "old worker write"
+    assert stage[1] == "worker-a"

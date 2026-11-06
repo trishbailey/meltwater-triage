@@ -178,7 +178,7 @@ load("{{ map.days if map.days is not none else 'all' }}");
 <div class="post post-row {% if plabel=='not_relevant' %}item-hidden{% endif %}" data-item-type="post" data-item-id="{{ post.doc_id }}" data-source="{{ post.source }}" data-label="{{ plabel }}" {% if plabel=='not_relevant' %}hidden{% endif %}>
 <div class="post-text">
 {% if post.type %}<span class="tag">{{ post.type }}</span> {% endif %}
-<span class="src">{{ post.source }}</span>
+<span class="src">{{ post.source }}</span>{% if post.publisher and post.publisher != post.source %} <span class="note">{{ post.publisher }}</span>{% endif %}
 <strong>{{ post.author or "Unknown" }}</strong>
 {{ post.text or post.summary }}
 {% if post.link %} <a href="{{ post.link }}" rel="noopener noreferrer" target="_blank">Open post</a>{% endif %}

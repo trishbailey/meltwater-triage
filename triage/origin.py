@@ -75,13 +75,27 @@ def host_of(url: str) -> str:
     return host
 
 
-def platform_from_host(host: str) -> str:
+_RECOGNIZED = {name for _, name in _HOSTS}
+
+
+def recognized_platform(host: str) -> str:
+    """Named social platform for this host, or empty when the host is an ordinary site."""
     host = (host or "").lower()
     if not host or "meltwater" in host:
         return ""
     for suffix, name in _HOSTS:
         if host == suffix or host.endswith("." + suffix):
             return name
+    return ""
+
+
+def platform_from_host(host: str) -> str:
+    named = recognized_platform(host)
+    if named:
+        return named
+    host = (host or "").lower()
+    if not host or "meltwater" in host:
+        return ""
     return host
 
 
@@ -95,28 +109,50 @@ def _clean_label(text: str) -> str:
     return _ALIASES.get(low, text[:120])
 
 
-def origin_label(row: dict | None) -> str:
-    """Publishing platform or site. The string 'Meltwater' is never returned."""
-    row = row or {}
-    url = ""
+def _first_url(row: dict) -> str:
     for name in ("url", "link", "original url", "source url", "permalink"):
         val = _get(row, name)
         if val:
-            url = str(val).strip()
-            break
-    from_host = platform_from_host(host_of(url))
-    for name in ("origin_source", "source name", "source", "publisher", "outlet", "site", "domain"):
+            return str(val).strip()
+    return ""
+
+
+def publisher_label(row: dict | None) -> str:
+    """Outlet or publication name. A recognized platform and the export tool are not publishers."""
+    row = row or {}
+    for name in ("publisher", "outlet", "source name", "source"):
         val = _get(row, name)
         if not val:
             continue
         low = " ".join(str(val).split()).lower()
-        if low in _GENERIC:
+        if low in _GENERIC or low in _NOT_A_SOURCE or "meltwater" in low:
             continue
-        named = _clean_label(val)
-        if named:
-            return named
-    if from_host:
-        return from_host
+        cleaned = _clean_label(val)
+        if not cleaned or cleaned in _RECOGNIZED:
+            continue
+        return cleaned
+    return ""
+
+
+def origin_label(row: dict | None) -> str:
+    """Where the post was published. A recognized URL platform wins over an outlet name.
+
+    News and other articles keep the outlet name. The export tool's name is never returned.
+    """
+    row = row or {}
+    host = host_of(_first_url(row))
+    platform = recognized_platform(host)
+    if platform:
+        return platform
+    for name in ("source", "source name", "origin_source"):
+        cleaned = _clean_label(_get(row, name) or "")
+        if cleaned in _RECOGNIZED:
+            return cleaned
+    outlet = publisher_label(row)
+    if outlet:
+        return outlet
+    if host and "meltwater" not in host:
+        return host
     return "Unknown source"
 
 
@@ -136,10 +172,15 @@ def backfill_sources(storage) -> int:
             blob = dict(data) if isinstance(data, dict) else {}
             current = (source_name or "").strip()
             low = current.lower()
-            needs = (not current) or ("meltwater" in low) or low == "unknown source"
             if link and not any(blob.get(k) for k in ("link", "URL", "url", "Link")):
                 blob["link"] = link
-            label = origin_label(blob) if needs else current
+            label_now = origin_label(blob)
+            platform = recognized_platform(host_of(_first_url(blob)))
+            needs = (not current) or ("meltwater" in low) or low == "unknown source"
+            # A stored outlet name on a social URL is the publisher, not the source.
+            if platform and current != platform:
+                needs = True
+            label = label_now if needs else current
             if not label:
                 label = "Unknown source"
             if current == label and blob.get("origin_source") == label:

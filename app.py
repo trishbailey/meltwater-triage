@@ -22,7 +22,7 @@ import io
 
 import pandas as pd
 
-from triage.pipeline import process, to_workbook
+from triage.pipeline import SaveFailed, process, to_workbook
 from triage import dashboard as dash
 from triage.alerts import AlertError, parse_alert
 from triage.storage import Storage, persistence_enabled
@@ -170,7 +170,10 @@ def create_app() -> Flask:
             names = ", ".join(n for n, _ in files)[:300]
             rows_hint = _count_rows(files)
             work = _screen_work(files)
-            jid = jobs.start("screen", work, filenames=names, rows=rows_hint, inputs=list(files))
+            try:
+                jid = jobs.start("screen", work, filenames=names, rows=rows_hint, inputs=list(files))
+            except jobs.InputNotStored:
+                return {"error": "Could not store the upload, so it was not started."}, 503
             return {"job": jid, "filenames": names, "rows": rows_hint}, 202
         try:
             result = process(files)
@@ -328,8 +331,10 @@ def create_app() -> Flask:
 
         def work(progress):
             t0 = time.monotonic()
+            jid = jobs.current_jid()
+            checkpoint = jobs.JobCheckpoint(jid) if jid else None
             try:
-                result = process(files, progress=progress)
+                result = process(files, progress=progress, checkpoint=checkpoint)
             except ValueError as exc:
                 raise ValueError(_public_error(exc)) from exc
             except Exception as exc:
@@ -338,6 +343,8 @@ def create_app() -> Flask:
             # Release the raw upload now that it has been read. The database copy remains for resume.
             for i in range(len(files)):
                 files[i] = (files[i][0], b"")
+            if result.saved is False:
+                raise SaveFailed("Results were not saved to the database. Completed reviews were kept.")
             screened = result.screened_rows or len(result.all_posts)
             progress("Building the Excel export", screened, screened)
             payload = to_workbook(result)
