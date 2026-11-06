@@ -103,3 +103,12 @@ def test_collect_once_runs_one_time_per_value(tmp_path, monkeypatch):
     assert c.run_once_on_start(st, env={}) is None
     c.run_once_on_start(st, env={"COLLECT_ONCE": "next"}).join(5)
     assert ran == [1, 1]
+
+
+def test_pull_window_never_starts_before_1_november():
+    early = datetime(2026, 11, 1, 5, tzinfo=timezone.utc)
+    assert c.since_time(early) == datetime(2026, 11, 1, tzinfo=timezone.utc)
+    assert c.apify_window(early) == "2026-11-01"
+    later = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+    assert c.since_time(later) == datetime(2026, 11, 5, 20, tzinfo=timezone.utc)
+    assert c.apify_window(later) == c.WINDOW
