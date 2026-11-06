@@ -114,3 +114,25 @@ def test_map_falls_back_to_places_named_in_the_post():
     m = mapdata.build_map(df, days=None)
     assert [e["place"].lower() for e in m["events"]] == ["perth"]
     assert m["stats"] == {"protests": 2, "protests_located": 1, "from_text": 1}
+
+
+def test_protest_targets_are_physical_sites_only():
+    from triage.taxonomy import canon_site, site_targets, sites_from_text
+    assert site_targets("AUKUS; Australian Government; HMAS Stirling; Navy") == ["HMAS Stirling (Rockingham, WA)"]
+    assert site_targets("Henderson; Henderson shipyard; Sydney Town Hall") == [
+        "Henderson shipyard (WA)", "Town hall / council"]
+    assert canon_site("AUKUS") == "" and canon_site("the government") == "" and canon_site("Albanese") == ""
+    assert canon_site("Fremantle Port") == "Fremantle Port"
+    assert sites_from_text("Rally outside Parliament House against AUKUS") == ["Parliament House (Canberra)"]
+    assert sites_from_text("Opposition to AUKUS in general") == []
+
+
+def test_protest_section_targets_exclude_generic_names():
+    import pandas as pd
+    from triage import dashboard
+    df = pd.DataFrame([{"category": "protest", "document_id": "p1", "Hit Sentence": "Rally at Henderson shipyard",
+                        "post_date": pd.Timestamp("2026-11-03"), "refined_category": "protest", "is_genuine": True,
+                        "targets": "AUKUS; Henderson shipyard", "narrative_summary": "x", "link": "u"}])
+    ctx = dashboard.build(df, labels={("post", "p1"): "relevant"})
+    labels = [t["label"] for t in ctx["protests"]["targets"]]
+    assert labels == ["Henderson shipyard (WA)"]

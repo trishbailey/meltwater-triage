@@ -12,7 +12,7 @@ from .filters import DROPPED_PROTEST_STATUSES, is_petition_only
 from .grouping import group_indices
 from .export import (PROTEST_CATS, THREAT_CATS, author_handle, is_rejected, post_text)
 from .origin import origin_label
-from .taxonomy import canon_targets, canon_topic, targets_from_text
+from .taxonomy import canon_targets, canon_topic, site_targets, sites_from_text, targets_from_text
 from . import unified
 
 COLORS = {"threat": "#c92f24", "protest": "#c8a24a"}
@@ -103,11 +103,11 @@ def _view(df: pd.DataFrame, labels: dict, reasons: dict | None = None, auto: dic
     return out
 
 
-def _target_counts(rows: list[dict], n: int = TOP_N) -> list[dict]:
+def _target_counts(rows: list[dict], n: int = TOP_N, physical: bool = False) -> list[dict]:
     """Posts per grouped target. A post naming two variants of one target counts once."""
     counts: dict[str, list] = {}
     for r in rows:
-        for label in _targets(r):
+        for label in _targets(r, physical):
             rec = counts.setdefault(label.lower(), [label, 0])
             rec[1] += 1
     items = sorted(counts.values(), key=lambda x: (-x[1], x[0]))[:n]
@@ -140,7 +140,9 @@ def _topic_label(r: dict, kind: str) -> str:
     return canon_topic(r["protest_topic"]) or canon_topic(r["text"]) or PENDING
 
 
-def _targets(r: dict) -> list[str]:
+def _targets(r: dict, physical: bool = False) -> list[str]:
+    if physical:  # protest targets are specific places, never "AUKUS" or "the government"
+        return site_targets(r["targets"]) or sites_from_text(r["text"])
     return canon_targets(r["targets"]) if r["targets"] else targets_from_text(r["text"])
 
 
@@ -149,7 +151,7 @@ def _post_card(r: dict, kind: str) -> dict:
                               "label", "summary", "reviewed", "reason", "note", "auto")}
     # Used by the page to rebuild the analysis as the analyst marks posts.
     card["topic"] = _topic_label(r, kind)
-    card["target_list"] = _targets(r)
+    card["target_list"] = _targets(r, kind == "protest")
     return card
 
 
@@ -183,7 +185,7 @@ def _section(rows: list[dict], kind: str) -> dict:
         "kind": kind, "count": len(rows),
         "reviewed": len(reviewed), "pending": len(pending),
         "topics": _topics(kept, kind),
-        "targets": _target_counts(kept),
+        "targets": _target_counts(kept, physical=(kind == "protest")),
         "groups": shown_rev, "pending_groups": shown_pen,
         "groups_total": len(g_rev), "pending_groups_total": len(g_pen),
         "more": sum(g["n"] for g in g_rev[MAX_GROUPS:]) + sum(g["n"] for g in g_pen[MAX_GROUPS:]),

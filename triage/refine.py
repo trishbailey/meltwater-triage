@@ -76,8 +76,9 @@ _THREAT_FIELDS = (
 _PROTEST_FIELDS = (
     "\"id\": int, \"protest_topic\": exactly one of \"" + "\"|\"".join(PROTEST_TOPICS) + "\", "
     "\"protest_location\": string (city, region, or site), \"organizers_or_groups\": [who is behind it], "
-    "\"targets\": [short names of what the protest is aimed at, one name per target, e.g. AUKUS, "
-    "Australian Government, HMAS Stirling], \"event_date\": string (only if stated), "
+    "\"targets\": [specific physical places the protest is held at or aimed at, one per entry, e.g. HMAS Stirling, "
+    "Henderson shipyard, Pine Gap, Parliament House Canberra, US Consulate Sydney, Sydney Town Hall; never a "
+    "general subject such as AUKUS, the government, or the Navy; leave empty when no physical place is named], \"event_date\": string (only if stated), "
     "\"scale_or_turnout\": string (only if stated), \"narrative_summary\": string (max 20 words)"
 )
 _BOTH_FIELDS = (
