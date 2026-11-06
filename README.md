@@ -136,7 +136,7 @@ top sources/authors, drill-down) will reuse `require_password` and `screen_dataf
 
 ## Scheduled collection (Facebook, Instagram, Bluesky)
 `POST /api/collect` (same bearer token as `/api/alerts`) starts `triage/collect.py` in the background; `GET /api/collect` reports the last result.
-A Render cron job calls it every 12 hours. Facebook pages and Instagram accounts run through the Apify actors
+The web service also runs the pull itself at 06:00 and 20:00 UTC (about 5 pm and 7 am Sydney time in summer, 4 pm and 6 am in winter) (`COLLECT_HOURS`; `COLLECT_SCHEDULE=0` turns it off), starting only when `APIFY_TOKEN` or the Bluesky variables are set. No separate cron job is needed. Facebook pages and Instagram accounts run through the Apify actors
 `apify/facebook-posts-scraper` and `apify/instagram-post-scraper` (`APIFY_TOKEN`); the account lists are constants in `triage/collect.py`.
-Bluesky searches use `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD`. `COLLECT_WINDOW_HOURS` (default 14) sets the look-back.
+Bluesky searches use `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD`. `COLLECT_WINDOW_HOURS` (default 16) sets the look-back.
 Posts are stored as alerts, pre-sorted like uploads, and de-duplicated by URL. X is not wired yet.
