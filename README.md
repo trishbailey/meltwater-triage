@@ -119,7 +119,7 @@ uploads and alert deletion reject cross-site Origin headers. For local http test
 
 - `POST /alerts/<id>/delete` (signed in): deletes one alert; the dashboard has a Delete button on each alert.
 - `/status` (password): stored rows by post month and flag type, upload runs, alert count, and posts sent for review this month against the monthly cap.
-- `/dashboard` (password): the last 30 days, with older posts kept in storage; threat and protest counts without a month-to-month comparison; targets with the same name combined; recurring direct-threat posters; planned protests; early-warning layer.
+- `/dashboard`: map for the last 30 days with Threats and Protests toggles, then a Threats section and a Protests section. Each section has topic analysis, top targets, top authors, and flagged posts in a collapsed list. Older posts stay stored.
 - `POST /api/alerts` with `Authorization: Bearer $ALERT_INGEST_TOKEN` and a JSON body:
   `source` (x, bluesky, facebook, instagram, newsletter), `url`, `author`, `text`, `posted_at` (ISO 8601),
   `matched_terms` (list or `;`-separated), `signal_level` (critical, high, medium, low).

@@ -146,10 +146,16 @@ def test_dashboard_renders_with_data(client):
     client.post("/api/alerts", json=ALERT, headers=bearer())
     login(client)
     html = client.get("/dashboard?month=2026-10", headers=auth()).get_data(as_text=True)
-    for s in ("Recurring threat posters", "Early warning", "Threat ranking", "last 30 days",
-              "Upcoming protests", "post-row", "not added to the threat or protest totals"):
-        assert s in html
-    assert "Monthly trend" not in html and "Last 90 days" not in html and "Advocacy" not in html
+    assert html.index('id="map-panel"') < html.index('id="threats"') < html.index('id="protests"')
+    for s in ("Threat topic analysis", "Top threat targets", "Top threat authors", "Flagged posts",
+              "Protest topic analysis", "Top protest targets", "Top protest authors", "Flagged protest posts",
+              "post-row", "last 30 days"):
+        assert s in html.lower() or s in html
+    assert '<details id="threat-posts">' in html and 'id="threat-posts" open' not in html
+    assert '<details id="protest-posts">' in html and 'id="protest-posts" open' not in html
+    assert html.count('class="btn map-layer"') == 2
+    for gone in ("Monthly trend", "Last 90 days", "Early warning", "Upcoming protests", "Recurring threat posters"):
+        assert gone not in html
     assert "Trish" not in html and "google-analytics" not in html
     status = client.get("/status", headers=auth()).get_data(as_text=True)
     assert "rows" in status.lower() or "post" in status.lower()

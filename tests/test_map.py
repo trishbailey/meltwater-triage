@@ -55,11 +55,22 @@ def test_dashboard_includes_map(client):
     assert 'id="dash-map"' in html
     assert "Natural Earth" in html and "tile.openstreetmap.org" in html
     assert "leaflet" in html.lower() and "OpenStreetMap" in html
-    assert 'data-layer="threats"' in html and 'data-layer="past"' in html
-    assert 'data-layer="planned"' in html and 'data-layer="advocacy"' not in html
-    assert 'data-days="90"' not in html and "Last 90 days" not in html
+    assert html.count('class="btn map-layer"') == 2
+    assert 'data-layer="threats"' in html and 'data-layer="protests"' in html
+    assert 'data-layer="past"' not in html and 'data-layer="planned"' not in html
+    assert 'data-layer="advocacy"' not in html and 'data-days=' not in html
+    assert "last 90" not in html.lower() and "last 7" not in html.lower()
     assert "last 30 days" in html.lower()
-    assert html.count('aria-pressed="true"') >= 3
+    assert html.count('aria-pressed="true"') == 2
+    assert html.index('id="map-panel"') < html.index('id="threats"') < html.index('id="protests"')
+    for title in ("Threat topic analysis", "Top threat targets", "Top threat authors", "Flagged posts"):
+        assert title in html
+    for title in ("Protest topic analysis", "Top protest targets", "Top protest authors", "Flagged protest posts"):
+        assert title in html
+    assert '<details id="threat-posts">' in html and '<details id="protest-posts">' in html
+    assert 'id="threat-posts" open' not in html and 'id="protest-posts" open' not in html
+    for gone in ("Early warning", "Upcoming protests", "Recurring threat posters", "Monthly trend", "Recent Excel exports"):
+        assert gone not in html
     forced = client.get("/api/map?days=90").get_json()
     assert forced["days"] == 30
     data = client.get("/api/map?days=30").get_json()
@@ -96,4 +107,5 @@ def test_basemap_and_phone_layout(client):
     assert "bindTooltip" not in html
     assert "post-row" in html
     assert "google-analytics" not in html and "Trish" not in html
-    assert "Meltwater" not in html.split('id="map-legend"')[-1].split("</section>")[0]
+    map_html = html.split('id="map-panel"', 1)[1].split("</section>", 1)[0]
+    assert "Meltwater" not in map_html

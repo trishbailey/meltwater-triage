@@ -92,8 +92,15 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
     except Exception:
         ctx["relevance_labels"] = {}
         ctx["noisy_terms"] = []
-    ctx.setdefault("threat_chart", {"rows": [], "grouping": "", "stored_types": [], "stored_targets": []})
+    ctx.setdefault("threat_chart", {"rows": [], "grouping": "", "unspecified": 0, "stored_types": [], "stored_targets": []})
+    ctx.setdefault("protest_chart", {"rows": [], "grouping": "", "unspecified": 0, "stored_types": [], "stored_targets": []})
+    ctx.setdefault("threat_topics", [])
+    ctx.setdefault("protest_topics", [])
+    ctx.setdefault("threat_authors", [])
+    ctx.setdefault("protest_authors", [])
     ctx.setdefault("flagged_sample", [])
+    ctx.setdefault("protest_posts", [])
+    ctx.setdefault("posters", [])
     ctx.setdefault("upcoming", [])
     ctx.setdefault("narrative", "")
     from . import geo
@@ -144,7 +151,16 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
     df["_in_window"] = in_window
     df["_dup"] = keep_duplicate
     df["_body"] = bodies
-    df["_targets"] = [stated_targets(df.iloc[i].to_dict(), flags[i]["raw"]) for i in range(len(df))]
+    target_lists = []
+    for i in range(len(df)):
+        rec = df.iloc[i].to_dict()
+        labels = stated_targets(rec, flags[i]["raw"])
+        if not labels and flags[i]["protest"] and not flags[i]["threat"]:
+            loc = str(rec.get("protest_location") or "").strip()
+            if loc and loc.lower() not in {"unknown", "none", "n/a", "australia"}:
+                labels = [loc]
+        target_lists.append(labels)
+    df["_targets"] = target_lists
     view = df[df["_in_window"] & ~df["_dup"]].copy()
     ctx["stored_posts"] = int(len(df))
     ctx["has_data"] = not view.empty
@@ -167,39 +183,23 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
     ctx["threat_types"] = []
     ctx["targets"] = _split_counts(t["_targets"].map(lambda xs: "; ".join(xs)) if not t.empty else pd.Series(dtype=object),
                                    t["eng"] if not t.empty else pd.Series(dtype=float))
-    ctx["threat_chart"] = build_threat_chart(t)
+    ctx["threat_chart"] = build_threat_chart(t, "threat")
     ctx["narrative"] = _narrative(s_cur, ctx["threat_chart"], ctx["upcoming"])
     both = view[view["_threat"] | view["_protest"]]
     ctx["people"] = _split_counts(both.get("named_individuals", pd.Series(dtype=object)), both["eng"]) if not both.empty else []
-    posters = recurring_threat_posters(t, min_count=2, respect_genuine=False) if not t.empty else pd.DataFrame()
+    ctx["threat_topics"] = _named_counts(t, "threat_type")
+    ctx["protest_topics"] = _named_counts(p, "protest_topic")
+    ctx["protest_chart"] = build_threat_chart(p, "protest")
+    threat_authors = _author_rank(t)
+    protest_authors = _author_rank(p)
+    ctx["threat_authors"] = threat_authors
+    ctx["protest_authors"] = protest_authors
+    ctx["posters"] = threat_authors
     ranked = t.sort_values("eng", ascending=False) if not t.empty else t
     ctx["flagged_sample"] = [_present(row) for _, row in ranked.head(25).iterrows()]
-    hc, nc = _col(t, "author handle"), _col(t, "author name")
-    plist = []
-    for r in posters.head(10).itertuples() if not posters.empty else []:
-        key = (r.author_handle or r.author_name or "").lower()
-        if hc and nc:
-            mine = t[(t[hc].fillna("").str.lower() == key) | (t[nc].fillna("").str.lower() == key)]
-        else:
-            mine = t.iloc[0:0]
-        seen_body = set()
-        posts_out = []
-        for _, row in mine.iterrows():
-            body = " ".join(str(row.get("_body") or "").split()).lower()
-            if body and body in seen_body:
-                continue
-            if body:
-                seen_body.add(body)
-            posts_out.append(_present(row))
-            if len(posts_out) >= 10:
-                break
-        plist.append({"handle": r.author_handle, "name": r.author_name, "count": int(r.threat_posts),
-                      "engagement": int(r.total_engagement),
-                      "first": str(r.first_seen)[:10], "last": str(r.last_seen)[:10],
-                      "posts": posts_out})
-    ctx["posters"] = plist
+    protest_ranked = p.sort_values("eng", ascending=False) if not p.empty else p
+    ctx["protest_posts"] = [_present(row) for _, row in protest_ranked.head(25).iterrows()]
     ctx["protest_locations"] = _split_counts(p.get("protest_location", pd.Series(dtype=object)), p["eng"]) if not p.empty else []
-    ctx["protest_topics"] = _split_counts(p.get("protest_topic", pd.Series(dtype=object)), p["eng"]) if not p.empty else []
     ctx["organizers"] = _split_counts(p.get("organizers_or_groups", pd.Series(dtype=object)), p["eng"]) if not p.empty else []
     heat_rows = heat_src[pd.to_numeric(heat_src.get("heat_score"), errors="coerce").notna()] if "heat_score" in heat_src else heat_src.iloc[0:0]
     if not heat_rows.empty and "heat_topic" in heat_rows:
@@ -302,12 +302,29 @@ def _aware(v):
 
 
 
-def build_threat_chart(df: pd.DataFrame) -> dict:
-    """One bar per stated target. The same target is not split by threat type.
+def _named_counts(frame: pd.DataFrame, column: str) -> list[dict]:
+    """Rank one stored label per post. Blank and non-labels are left out."""
+    if frame is None or frame.empty or column not in frame.columns:
+        return []
+    labels = frame[column].map(lambda v: "" if str(v or "").strip().lower() in _HIDE_TYPE else str(v or "").strip())
+    return _split_counts(labels, frame["eng"] if "eng" in frame.columns else None)
+
+
+def _author_rank(frame: pd.DataFrame) -> list[dict]:
+    """Top accounts by distinct posts. The post text is not repeated here."""
+    if frame is None or frame.empty:
+        return []
+    ranked = recurring_threat_posters(frame, min_count=1, respect_genuine=False, category_filter=False)
+    return [{"handle": r.author_handle, "name": r.author_name, "count": int(r.threat_posts),
+             "engagement": int(r.total_engagement)} for r in ranked.head(TOP_N).itertuples()]
+
+
+def build_threat_chart(df: pd.DataFrame, noun: str = "threat") -> dict:
+    """One bar per stated target. The same target is not split by type.
 
     Posts with no stated target are counted beside the chart, not ranked as a target.
     """
-    empty = {"rows": [], "grouping": "No stated threat targets in the last 30 days.",
+    empty = {"rows": [], "grouping": f"No stated {noun} targets in the last 30 days.",
              "unspecified": 0, "stored_types": [], "stored_targets": []}
     if df is None or df.empty:
         return empty
@@ -317,8 +334,6 @@ def build_threat_chart(df: pd.DataFrame) -> dict:
     eng = df["eng"] if "eng" in df.columns else (
         _num(df[_col(df, "engagement")]) if _col(df, "engagement") else pd.Series(0, index=df.index))
     for i, r in df.iterrows():
-        if "_threat" in df.columns and not bool(r.get("_threat")):
-            continue
         labels = r.get("_targets") if isinstance(r.get("_targets"), list) else None
         if labels is None:
             labels = stated_targets(r.to_dict())
@@ -344,7 +359,8 @@ def build_threat_chart(df: pd.DataFrame) -> dict:
         "Albanese government, the Australian Labor government, and the Labor Party when "
         "that is the stated target. US bases stay separate. A post counts once for each "
         "of its targets. Posts with no stated target are not ranked"
-        + (f" ({unspecified} in this window)." if unspecified else ".")
+        + (f" ({unspecified} {noun} post{'s' if unspecified != 1 else ''} in this window)."
+           if unspecified else ".")
     )
     return {"rows": items, "grouping": grouping, "unspecified": unspecified,
             "stored_types": [], "stored_targets": [it["label"] for it in items]}

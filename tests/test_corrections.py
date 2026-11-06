@@ -191,7 +191,8 @@ def test_dashboard_hides_false_flags_and_duplicate_promo(monkeypatch):
     assert shown["yt"]["platform"] == "YouTube"
     assert shown["yt"]["handle"] == ""
     assert "Unknown" not in shown["yt"]["platform"] and "Unknown" not in (shown["yt"]["handle"] or "x")
-    assert ctx["posters"] == []
+    assert all(a["count"] < 2 for a in ctx["posters"])
+    assert not any("BestFree" in f"{a.get('handle') or ''} {a.get('name') or ''}" for a in ctx["posters"])
     places = [e["place"] for e in ctx["upcoming"]]
     assert "Supreme Court Gardens" in places
     blank = [e for e in ctx["upcoming"] if e["place"] == "Supreme Court Gardens" and not e["url"]]

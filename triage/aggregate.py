@@ -31,12 +31,21 @@ def _distinct_threats(texts: list[str]) -> int:
 
 
 def recurring_threat_posters(flagged: pd.DataFrame, min_count: int = 2,
-                             respect_genuine: bool = True) -> pd.DataFrame:
-    """Authors with >= min_count distinct direct threats: handle, name, count, engagement, first/last seen."""
+                             respect_genuine: bool = True, category_filter: bool = True) -> pd.DataFrame:
+    """Authors with >= min_count distinct posts: handle, name, count, engagement, first/last seen.
+
+    By default only threat rows count. Pass category_filter=False when the caller already
+    chose the rows (threats or protests).
+    """
     cols = ["author_handle", "author_name", "threat_posts", "total_engagement", "first_seen", "last_seen"]
-    if flagged.empty or "category" not in flagged:
+    if flagged is None or flagged.empty:
         return pd.DataFrame(columns=cols)
-    t = flagged[flagged["category"].isin(["threat", "both"])]
+    if category_filter:
+        if "category" not in flagged:
+            return pd.DataFrame(columns=cols)
+        t = flagged[flagged["category"].isin(["threat", "both"])]
+    else:
+        t = flagged
     if respect_genuine and "is_genuine" in t:  # drop posts the review marked as not genuine
         t = t[t["is_genuine"].ne(False)]
     if t.empty:
