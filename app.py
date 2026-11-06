@@ -260,7 +260,7 @@ def create_app() -> Flask:
             days = unified.WINDOW_DAYS
         from triage.excel_safe import write_sheets
         from triage.export import single_sheet
-        sheets = single_sheet(unified.load(st, days=days), kind, {k: v for k, v in _labels().items()})
+        sheets = single_sheet(unified.load(st, days=days), kind, _labels(), relevant_only=True)
         return _xlsx(write_sheets(sheets), prefix=f"{kind}_posts")
 
     @app.get("/download/threats.xlsx")

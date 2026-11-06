@@ -21,6 +21,8 @@ from typing import Callable
 
 import pandas as pd
 
+from .taxonomy import PROTEST_TOPICS, canon_topic
+
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-haiku-4-5"
@@ -53,9 +55,10 @@ _THREAT_FIELDS = (
 )
 _PROTEST_FIELDS = (
     "\"id\": int, \"is_genuine\": bool (true only for a call to rally, blockade, or take direct "
-    "action, or a report of one), \"protest_topic\": string (2-6 words), \"protest_location\": "
-    "string (city, region, or site), \"organizers_or_groups\": [who is behind it], \"targets\": "
-    "[what the protest is aimed at], \"event_date\": string (only if stated), "
+    "action, or a report of one), \"protest_topic\": exactly one of \"" + "\"|\"".join(PROTEST_TOPICS) + "\", "
+    "\"protest_location\": string (city, region, or site), \"organizers_or_groups\": [who is behind it], "
+    "\"targets\": [short names of what the protest is aimed at, one name per target, e.g. AUKUS, "
+    "Australian Government, HMAS Stirling], \"event_date\": string (only if stated), "
     "\"scale_or_turnout\": string (only if stated), \"narrative_summary\": string (max 20 words)"
 )
 _BOTH_FIELDS = (
@@ -182,6 +185,7 @@ def _clean(item: dict, kind: str | None = None) -> dict:
     sev = str(item.get("severity", "")).lower()
     tt = str(item.get("threat_type", "")).strip().lower()
     topic = _text(item.get("protest_topic"), 100)
+    topic = topic if topic in PROTEST_TOPICS else canon_topic(topic)
     theme = str(item.get("theme", ""))[:100] or topic
     return {
         "is_genuine": genuine,

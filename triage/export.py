@@ -117,16 +117,29 @@ def post_sheets(df: pd.DataFrame, labels: dict | None = None) -> list[tuple[str,
     return sheets
 
 
-def single_sheet(df: pd.DataFrame, kind: str, labels: dict | None = None) -> list[tuple[str, pd.DataFrame]]:
-    """One category for the dashboard download: its posts, plus the AI-rejected ones."""
+def _is_relevant(rec: dict, labels: dict) -> bool:
+    doc = rec.get("item_id") or rec.get("document_id") or _lookup(rec, "document id") or ""
+    return (labels or {}).get((rec.get("item_type") or "post", str(doc))) == "relevant"
+
+
+def single_sheet(df: pd.DataFrame, kind: str, labels: dict | None = None,
+                 relevant_only: bool = False) -> list[tuple[str, pd.DataFrame]]:
+    """One category for the dashboard download.
+
+    With relevant_only, the sheet holds just the posts the analyst marked Relevant. Posts marked
+    Not relevant, posts not yet reviewed, and posts the AI rejected are left out.
+    """
     threat, protest, rejected = split_posts(df)
     posts = threat if kind == "threat" else protest
     cats = THREAT_CATS if kind == "threat" else PROTEST_CATS
     ai = _THREAT_AI if kind == "threat" else _PROTEST_AI
     name = "Threat posts" if kind == "threat" else "Protest posts"
+    if relevant_only and len(posts):
+        keep = [_is_relevant(rec, labels) for rec in posts.to_dict(orient="records")]
+        posts = posts[keep]
     sheets = [(name, _frame(posts, ai, labels) if len(posts)
                else pd.DataFrame(columns=["platform", "author_handle", "date", "post_text", "link"]))]
     rej = rejected[rejected["category"].isin(cats)] if len(rejected) else rejected
-    if len(rej):
+    if len(rej) and not relevant_only:
         sheets.append(("Rejected by AI review", _frame(rej, ai, labels)))
     return sheets

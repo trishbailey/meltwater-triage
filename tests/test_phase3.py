@@ -129,12 +129,13 @@ def test_dashboard_view_has_threat_and_protest_sections():
     ctx = dash.build(df, {("post", "2"): "relevant"})
     t, p = ctx["threats"], ctx["protests"]
     assert t["count"] == 3 and p["count"] == 1
-    assert t["authors"][0]["label"] == "@bad" and len(t["authors"][0]["posts"]) == 3
-    assert t["targets"][0]["label"] == "Base A"
+    assert "authors" not in t and t["relevant"] == 1
+    assert t["targets"][0]["label"] == "Military bases and facilities"
     assert {x["label"].lower() for x in t["topics"]} == {"violence", "doxxing"}
-    assert p["topics"][0]["label"] == "submarines"
+    assert p["topics"][0]["label"] == "Other AUKUS-related"
     assert t["download"] == "/download/threats.xlsx" and p["download"] == "/download/protests.xlsx"
     assert {c["handle"] for c in t["posts"]} == {"@bad"} and t["posts"][0]["platform"]
+    assert "engagement" not in t["topics"][0] and "engagement" not in t["targets"][0]
 
 
 def test_dashboard_renders_with_data(client):
@@ -145,9 +146,10 @@ def test_dashboard_renders_with_data(client):
     st.save_run(rows_to_store(df, df), ["s.xlsx"], 4)
     login(client)
     html = client.get("/dashboard", headers=auth()).get_data(as_text=True)
-    for s in ("Threats", "Protests", "targets", "authors", "Flagged posts", "post-row",
+    for s in ("Threats", "Protests", "targets", "Flagged posts", "post-row",
               "/download/threats.xlsx", "/download/protests.xlsx"):
         assert s in html
+    assert "Top threat authors" not in html and "Top protest authors" not in html
     for gone in ("Early warning", "Monthly trend", "Upcoming protests", "Trish", "google-analytics"):
         assert gone not in html
 
@@ -178,3 +180,21 @@ def test_pages_public_and_robots(client):
         assert 'name="robots" content="noindex, nofollow"' in r.get_data(as_text=True)
     assert client.get("/robots.txt").get_data(as_text=True) == "User-agent: *\nDisallow: /\n"
     assert client.post("/api/alerts", json=ALERT).status_code == 401  # token still required
+
+
+def test_target_and_topic_groups_collapse_variants():
+    from triage.taxonomy import canon_targets, canon_topic
+    assert canon_targets("AUKUS program; AUKUS policy; AUKUS") == ["AUKUS"]
+    assert canon_targets("Albanese government") == canon_targets("Australian Government")
+    variants = ["AUKUS opposition", "Opposition to AUKUS", "AUKUS termination", "AUKUS submarine pact termination"]
+    assert {canon_topic(v) for v in variants} == {"AUKUS opposition and termination"}
+    assert canon_topic("AUKUS public inquiry findings") == "Inquiry and transparency"
+
+
+def test_download_contains_only_posts_marked_relevant():
+    from triage.export import single_sheet
+    df = _posts()
+    labels = {("post", "2"): "relevant", ("post", "3"): "not_relevant"}
+    (name, frame), *rest = single_sheet(df, "threat", labels, relevant_only=True)
+    assert name == "Threat posts" and list(frame["document_id"].astype(str)) == ["2"] and not rest
+    assert single_sheet(df, "threat", {}, relevant_only=True)[0][1].empty
