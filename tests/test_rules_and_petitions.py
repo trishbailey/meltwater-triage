@@ -166,3 +166,10 @@ def test_unjudged_groups_come_before_relevant_ones():
     ctx = dashboard.build(pd.DataFrame(rows), labels={("post", "p0"): "relevant"})
     texts = [g["rep"]["text"] for g in ctx["protests"]["groups"]]
     assert texts[0].startswith("March in Sydney")  # unjudged older post is above the newer Relevant one
+
+
+def test_threat_targets_must_be_specific_sites():
+    from triage import dashboard as d
+    r = {"targets": "AUKUS; Australia; HMAS Stirling", "text": "x"}
+    assert d._targets(r, True) == ["HMAS Stirling (Rockingham, WA)"]
+    assert d._targets({"targets": "AUKUS", "text": "nothing"}, True) == []

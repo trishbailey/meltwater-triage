@@ -113,7 +113,7 @@ _GENERIC_TARGET = re.compile(
     r"labor|alp|coalition|military|defen[cs]e|navy|police|nuclear|war|australia|the government|politicians?)$", re.I)
 _PHYSICAL_WORD = re.compile(
     r"\b(base|shipyard|dockyard|yard|port|harbou?r|naval|hmas|raaf|facility|gates?|headquarters|hq|embassy|consulate|"
-    r"house|hall|office|offices|centre|center|square|park|street|road|airport|airfield|station|camp|wharf|terminal)\b", re.I)
+    r"house|hall|office|offices|centre|center|square|park|street|road|airport|airfield|station|camp|wharf|terminal|pier|depot|plant|warship|vessel|ship|submarine base)\b", re.I)
 
 
 def canon_site(text: str) -> str:
