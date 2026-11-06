@@ -124,9 +124,19 @@ def _topics(rows: list[dict], kind: str) -> list[dict]:
     return _bars(items)
 
 
-def _post_card(r: dict) -> dict:
-    return {k: r[k] for k in ("item_type", "item_id", "platform", "handle", "date", "text", "link",
+def _topic_label(r: dict, kind: str) -> str:
+    if kind == "threat":
+        return r["threat_type"].strip().capitalize() or PENDING
+    return canon_topic(r["protest_topic"]) or PENDING
+
+
+def _post_card(r: dict, kind: str) -> dict:
+    card = {k: r[k] for k in ("item_type", "item_id", "platform", "handle", "date", "text", "link",
                               "label", "summary", "reviewed")}
+    # Used by the page to rebuild the analysis as the analyst marks posts.
+    card["topic"] = _topic_label(r, kind)
+    card["target_list"] = canon_targets(r["targets"])
+    return card
 
 
 def _sorted_posts(rows: list[dict]) -> list[dict]:
@@ -136,13 +146,14 @@ def _sorted_posts(rows: list[dict]) -> list[dict]:
 
 def _section(rows: list[dict], kind: str) -> dict:
     ordered = _sorted_posts(rows)
+    kept = [r for r in rows if r["label"] == "relevant"]  # analysis uses analyst-confirmed posts only
     return {
         "kind": kind, "count": len(rows),
         "reviewed": sum(1 for r in rows if r["reviewed"]),
         "pending": sum(1 for r in rows if not r["reviewed"]),
-        "topics": _topics(rows, kind),
-        "targets": _target_counts(rows),
-        "posts": [_post_card(r) for r in ordered[:MAX_POSTS]],
+        "topics": _topics(kept, kind),
+        "targets": _target_counts(kept),
+        "posts": [_post_card(r, kind) for r in ordered[:MAX_POSTS]],
         "more": max(0, len(ordered) - MAX_POSTS),
         "relevant": sum(1 for r in rows if r["label"] == "relevant"),
         "download": f"/download/{kind}s.xlsx",
