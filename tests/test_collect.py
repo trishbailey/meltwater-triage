@@ -56,3 +56,21 @@ def test_scheduler_needs_a_configured_source(tmp_path):
     st = Storage(f"sqlite:///{tmp_path/'s.db'}")
     assert c.start_scheduler(st, env={}) is None
     assert c.start_scheduler(st, env={"APIFY_TOKEN": "t", "COLLECT_SCHEDULE": "0"}) is None
+
+
+def test_x_pull_takes_top_posts_only(tmp_path):
+    st = Storage(f"sqlite:///{tmp_path/'x.db'}")
+    seen = []
+
+    def fetch(url, data=None, headers=None, timeout=0):
+        seen.append((url, headers))
+        return {"data": [{"id": str(i), "author_id": "u1", "text": f"AUKUS post {i}",
+                          "created_at": "2026-11-06T03:00:00.000Z"} for i in range(15)],
+                "includes": {"users": [{"id": "u1", "username": "someone"}]}}
+
+    now = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+    out = c.collect(st, fetch=fetch, env={"X_BEARER_TOKEN": "tok"}, now=now)
+    assert out["x"] == {"fetched": 10, "new": 10}
+    url, headers = seen[0]
+    assert "sort_order=relevancy" in url and "max_results=10" in url and headers == {"Authorization": "Bearer tok"}
+    assert set(st.load_alerts()["source"]) == {"x"}

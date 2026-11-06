@@ -1,4 +1,4 @@
-"""Scheduled collection of Facebook, Instagram and Bluesky posts into the alerts table.
+"""Scheduled collection of Facebook, Instagram, Bluesky and X posts into the alerts table.
 
 Facebook and Instagram run through Apify actors (APIFY_TOKEN). Bluesky uses its own search API
 (BLUESKY_HANDLE and BLUESKY_APP_PASSWORD). Each post becomes an alert; the dashboard applies the
@@ -41,6 +41,9 @@ FACEBOOK_PAGES = [
     "https://www.facebook.com/RejectAUKUSRockingham/",
 ]
 BLUESKY_QUERIES = ["AUKUS", "Pine Gap", "HMAS Stirling", "Osborne shipyard", "AUKUS protest", "AUKUS rally"]
+
+X_QUERY = '(AUKUS OR "Pine Gap" OR "HMAS Stirling" OR "Osborne shipyard") -is:retweet'
+X_TOKEN_VARS = ("X_BEARER_TOKEN", "TWITTER_BEARER_TOKEN", "X_API_BEARER_TOKEN")
 
 ACTOR_INSTAGRAM = "apify~instagram-post-scraper"
 ACTOR_FACEBOOK = "apify~facebook-posts-scraper"
@@ -125,6 +128,33 @@ def bluesky_alerts(handle: str, password: str, queries=BLUESKY_QUERIES, fetch=_h
     return out
 
 
+def x_token(env) -> str:
+    for name in X_TOKEN_VARS:
+        if env.get(name):
+            return env[name].strip()
+    return ""
+
+
+def x_alerts(token: str, fetch=_http, now: datetime | None = None, top_n: int = 10) -> list[dict]:
+    """Top posts (X's relevancy ranking) matching the AUKUS query since the last window. One cheap call."""
+    since = ((now or datetime.now(timezone.utc)) - timedelta(hours=WINDOW_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    params = urllib.parse.urlencode({
+        "query": X_QUERY, "start_time": since, "max_results": max(10, min(100, top_n)),
+        "sort_order": "relevancy", "tweet.fields": "created_at,public_metrics,author_id",
+        "expansions": "author_id", "user.fields": "username"})
+    data = fetch(f"https://api.x.com/2/tweets/search/recent?{params}", None,
+                 {"Authorization": f"Bearer {token}"}, 30) or {}
+    users = {u.get("id"): u.get("username", "") for u in (data.get("includes") or {}).get("users", [])}
+    out = []
+    for t in (data.get("data") or [])[:top_n]:
+        handle = users.get(t.get("author_id"), "")
+        url = f"https://x.com/{handle or 'i'}/status/{t.get('id')}"
+        a = _alert("x", url, handle, t.get("text", ""), t.get("created_at"))
+        if a:
+            out.append(a)
+    return out
+
+
 def collect(storage, fetch=_http, env=None, now: datetime | None = None) -> dict:
     """Pull every configured source and store new posts as alerts. Returns a per-source summary."""
     env = os.environ if env is None else env
@@ -147,7 +177,12 @@ def collect(storage, fetch=_http, env=None, now: datetime | None = None) -> dict
                                                        fetch=fetch, now=now)))
     else:
         summary["bluesky"] = "skipped: BLUESKY_HANDLE or BLUESKY_APP_PASSWORD not set"
-    summary["x"] = "skipped: not configured"
+    xt = x_token(env)
+    if xt:
+        top = int(env.get("X_TOP_N", "10") or 10)
+        jobs.append(("x", lambda: x_alerts(xt, fetch=fetch, now=now, top_n=top)))
+    else:
+        summary["x"] = "skipped: X_BEARER_TOKEN not set"
     for name, run in jobs:
         try:
             alerts = run()
@@ -185,7 +220,7 @@ def start_scheduler(storage, logger=log, env=None, sleep=None):
     env = os.environ if env is None else env
     if env.get("COLLECT_SCHEDULE", "1") == "0":
         return None
-    if not (env.get("APIFY_TOKEN") or (env.get("BLUESKY_HANDLE") and env.get("BLUESKY_APP_PASSWORD"))):
+    if not (env.get("APIFY_TOKEN") or x_token(env) or (env.get("BLUESKY_HANDLE") and env.get("BLUESKY_APP_PASSWORD"))):
         return None
     hours = sorted({int(h) for h in env.get("COLLECT_HOURS", "6,20").split(",") if h.strip()})
     pause = sleep or time.sleep
