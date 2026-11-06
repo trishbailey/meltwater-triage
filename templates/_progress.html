@@ -40,6 +40,7 @@ function bind(form){
   if(j.state==="running"){showRunning(j);setTimeout(function(){poll(id);},1000);return;}
   if(j.state==="error"){fail(j.error||"Upload failed.");return;}
   set(100,"Done","",false);okEl.textContent=j.message||"Done.";okEl.hidden=false;finish();
+  try{if(window.mtRecentExports)window.mtRecentExports.noteCompleted(id,j);}catch(e){}
   if(j.has_download){okEl.textContent=(j.message||"Done.")+" Downloading the Excel export…";
   downloadBlob(id).then(function(){okEl.textContent=j.message||"Done.";
   }).catch(function(){fail("Processed, but the Excel download failed. Refresh the dashboard to see saved posts.");});}
