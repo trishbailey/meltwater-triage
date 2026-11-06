@@ -141,7 +141,7 @@ def _topic_label(r: dict, kind: str) -> str:
 
 
 def _targets(r: dict, physical: bool = False) -> list[str]:
-    if physical:  # protest targets are specific places, never "AUKUS" or "the government"
+    if physical:  # targets are specific places or assets, never "AUKUS", "Australia" or "the government"
         return site_targets(r["targets"]) or sites_from_text(r["text"])
     return canon_targets(r["targets"]) if r["targets"] else targets_from_text(r["text"])
 
@@ -151,7 +151,7 @@ def _post_card(r: dict, kind: str) -> dict:
                               "label", "summary", "reviewed", "reason", "note", "auto")}
     # Used by the page to rebuild the analysis as the analyst marks posts.
     card["topic"] = _topic_label(r, kind)
-    card["target_list"] = _targets(r, kind == "protest")
+    card["target_list"] = _targets(r, True)
     return card
 
 
@@ -190,7 +190,7 @@ def _section(rows: list[dict], kind: str) -> dict:
         "kind": kind, "count": len(rows),
         "reviewed": len(reviewed), "pending": len(pending),
         "topics": _topics(kept, kind),
-        "targets": _target_counts(kept, physical=(kind == "protest")),
+        "targets": _target_counts(kept, physical=True),
         "groups": shown_rev, "pending_groups": shown_pen,
         "todo_groups": todo, "done_groups": done,
         "todo_posts": sum(g["n"] for g in todo), "done_posts": sum(g["n"] for g in done),
