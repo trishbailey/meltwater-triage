@@ -284,12 +284,14 @@ function renderEvents(){
       n++;
     });
   }
-  document.getElementById("map-count").textContent=n+" marker"+(n===1?"":"s")+" shown";
+  var st=cache.stats||{}, extra="";
+  if(st.protests>st.protests_located) extra=" ("+(st.protests-st.protests_located)+" relevant protest post"+((st.protests-st.protests_located)===1?"":"s")+" name no place Australia can map)";
+  document.getElementById("map-count").textContent=n+" marker"+(n===1?"":"s")+" shown"+extra;
 }
 function load(){
   document.getElementById("map-count").textContent="Loading…";
   fetch("/api/map",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(data){
-    cache.events=data.events||[]; cache.threats=data.threats||[];
+    cache.events=data.events||[]; cache.threats=data.threats||[]; cache.stats=data.stats||{};
     renderEvents();
     setTimeout(function(){map.invalidateSize();},50);
   }).catch(function(){document.getElementById("map-count").textContent="Could not load map markers.";});
@@ -299,7 +301,7 @@ new MutationObserver(function(){
   clearTimeout(reloadTimer);
   reloadTimer=setTimeout(function(){
     fetch("/api/map",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(data){
-      cache.events=data.events||[]; cache.threats=data.threats||[]; renderEvents();
+      cache.events=data.events||[]; cache.threats=data.threats||[]; cache.stats=data.stats||{}; renderEvents();
     }).catch(function(){});
   },900);
 }).observe(document.body,{subtree:true,attributes:true,attributeFilter:["data-label"]});

@@ -102,3 +102,15 @@ def test_forum_media_release_post_is_not_a_protest():
          "East Coast Submarine Base Now' which nominated Newcastle as its preferred option. #auspol #AUKUS "
          "#AUKUSPublicInquiry #accountability #transparency ; The 'AUKUS Revolving Door")
     assert f.screen_text(t, f.Patterns())["category"] == ""
+
+
+def test_map_falls_back_to_places_named_in_the_post():
+    import pandas as pd
+    from triage import mapdata
+    df = pd.DataFrame([{"category": "protest", "document_id": "d1", "post_date": pd.Timestamp("2026-11-03"),
+                        "Hit Sentence": "Rally against AUKUS this Saturday outside Town Hall in Perth", "link": "u"},
+                       {"category": "protest", "document_id": "d2", "post_date": pd.Timestamp("2026-11-03"),
+                        "Hit Sentence": "Join the march online everywhere", "link": "v"}])
+    m = mapdata.build_map(df, days=None)
+    assert [e["place"].lower() for e in m["events"]] == ["perth"]
+    assert m["stats"] == {"protests": 2, "protests_located": 1, "from_text": 1}

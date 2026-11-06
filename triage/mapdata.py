@@ -81,6 +81,21 @@ def _s(value) -> str:
     return str(value)
 
 
+def _places_in_text(text: str, limit: int = 2) -> list[str]:
+    """Known Australian cities and defence sites named in the post text (used when analysis gave no location)."""
+    low = (text or "").lower()
+    names = list(geo.CITY_CENTROIDS) + [a[0] for a in geo.ASSETS]
+    found = []
+    for name in sorted(set(names), key=len, reverse=True):
+        n = name.lower()
+        if len(n) >= 4 and re.search(rf"(?<!\w){re.escape(n)}(?!\w)", low):
+            if not any(n in f.lower() for f in found):
+                found.append(name)
+        if len(found) >= limit:
+            break
+    return found
+
+
 def _color_for(kind: str) -> str:
     return geo.THREAT_MAP_COLOR if kind == "threat" else geo.EVENT_COLOR
 
@@ -101,6 +116,7 @@ def build_map(raw: pd.DataFrame | None, days: int | None = 30) -> dict:
     events: list[dict] = []
     threats: list[dict] = []
     seen: set[tuple] = set()
+    stats = {"protests": 0, "protests_located": 0, "from_text": 0}
     geo.reset_nominatim_budget(10)
 
     if raw is not None and not raw.empty and "category" in raw.columns:
@@ -117,8 +133,14 @@ def build_map(raw: pd.DataFrame | None, days: int | None = 30) -> dict:
             date = when.strftime("%Y-%m-%d") if when else ""
             doc = _s(rec.get("document_id")) or _s(rec.get("item_id")) or _s(rec.get("Document ID"))
             if cat in PROTEST_CATS:
+                stats["protests"] += 1
                 places = (_split_places(rec.get("protest_location"))
                           or _split_places(_lookup(rec, "location")))
+                from_text = False
+                if not places:
+                    places = _places_in_text(post_text(rec) or summary)
+                    from_text = bool(places)
+                located = False
                 for place in places:
                     hit = geo.geocode(place)
                     if not hit or not geo.in_australia(hit["lat"], hit["lon"]):
@@ -127,11 +149,15 @@ def build_map(raw: pd.DataFrame | None, days: int | None = 30) -> dict:
                     if key in seen:
                         continue
                     seen.add(key)
+                    located = True
                     events.append({
                         "kind": "protest", "lat": hit["lat"], "lon": hit["lon"], "place": place,
                         "label": place, "date": date, "source": source, "url": link,
                         "color": geo.EVENT_COLOR, "text": _s(summary)[:180],
-                        "event_date": _s(rec.get("event_date"))})
+                        "event_date": _s(rec.get("event_date")),
+                        "note": "place read from the post text" if from_text else ""})
+                stats["protests_located"] += int(located)
+                stats["from_text"] += int(located and from_text)
             if cat in THREAT_CATS:
                 for place in _split_places(rec.get("targets"))[:3]:
                     hit = geo.geocode(place)
@@ -152,6 +178,7 @@ def build_map(raw: pd.DataFrame | None, days: int | None = 30) -> dict:
         "events": events,
         "threats": threats,
         "days": days,
+        "stats": stats,
         "bounds": {"south": geo.AU_SOUTH, "north": geo.AU_NORTH,
                    "west": geo.AU_WEST, "east": geo.AU_EAST},
         "legend": [
