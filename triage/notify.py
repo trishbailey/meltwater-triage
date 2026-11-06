@@ -1,4 +1,12 @@
-"""Tell the analyst when Claude has passed new posts on for human review.
+"""Alert the analyst to a dangerous threat or a spike in posts. No routine roundups.
+
+Triggers (checked after Claude's filter, on posts it kept):
+  1. Clear threat: Claude kept it as a threat AND it names a person or facility AND uses violent
+     language with intent (not news, quote, or hypothetical). Sent once per post.
+  2. Spike: kept posts in the last ALERT_SPIKE_WINDOW_HOURS (6) are at least ALERT_SPIKE_MULTIPLIER
+     (3) times the same-length window average over the prior 7 days AND at least
+     ALERT_SPIKE_MIN_POSTS (30). Threats and protests are counted separately; each category
+     alerts at most once per window.
 
 Channels (set any or all):
   ALERT_WEBHOOK_URL   an https webhook URL. Microsoft Teams (a Workflows "when a webhook request is
@@ -14,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import smtplib
 import urllib.request
 from urllib.parse import urlsplit
@@ -101,26 +110,107 @@ def configured(env=None) -> bool:
     return bool(env.get("ALERT_WEBHOOK_URL") or (env.get("ALERT_EMAIL_TO") and env.get("SMTP_HOST")))
 
 
-def compose(new: pd.DataFrame, base_url: str) -> tuple[str, str]:
-    cats = new["category"].fillna("") if "category" in new.columns else pd.Series("", index=new.index)
-    threats, protests = int(cats.isin(THREAT_CATS).sum()), int(cats.isin(PROTEST_CATS).sum())
-    parts = []
-    if threats:
-        parts.append(f"{threats} threat{'s' if threats != 1 else ''}")
-    if protests:
-        parts.append(f"{protests} protest{'s' if protests != 1 else ''}")
-    subject = "AUKUS monitor: " + (", ".join(parts) or f"{len(new)} posts") + " ready for review"
-    lines = [subject + ".", ""]
-    top = new[cats.isin(THREAT_CATS)].head(SNIPPETS) if threats else new.head(SNIPPETS)
-    for rec in top.to_dict(orient="records"):
+
+_ABSTRACT_TARGETS = {"aukus", "submarine program", "nuclear submarine", "nuclear-powered submarine",
+                     "pillar ii", "pillar one", "ssn-aukus"}
+_VIOLENT = re.compile(
+    r"\b(?:bomb(?:ed|ing)?|blow(?:ing)? up|assassinat\w*|behead\w*|lynch\w*|sabotag\w*|burn(?:ed|ing)? down|"
+    r"set fire to|shoot|shot|shooting|kill(?:ed|ing)?|murder\w*|stab(?:bed|bing)?|execute[d]?|hang(?:ed)?|"
+    r"poison\w*|massacre|kidnap\w*|take hostage|hunt down|know where you live|cut the power)\b", re.I)
+_INTENT = re.compile(
+    r"\b(?:i(?:'ll| will| am going to|'m going to)|we(?:'ll| will| are going to|'re going to)|gonna|"
+    r"should be|must be|need(?:s)? to be|someone (?:should|needs to)|let'?s|deserve\w*|time to|"
+    r"better watch|will pay)\b|^\W*(?:kill|shoot|bomb|burn|blow up|hang|assassinate|sabotage|murder)\b", re.I)
+_FRAMING = re.compile(
+    r"\b(?:said|says|according to|reported|reports|alleg\w+|claims?|warned|police|arrested|charged|"
+    r"analyst|could|might|would|if|news|quote|headline)\b|\?", re.I)
+
+
+def _concrete_target(text: str) -> bool:
+    from .filters import Patterns
+    p = _patterns()
+    hits = [m.group(0) for pat in (p.target, p.target_cs) if pat for m in pat.finditer(text)]
+    return any(h.lower() not in _ABSTRACT_TARGETS for h in hits)
+
+
+_P = None
+
+
+def _patterns():
+    global _P
+    if _P is None:
+        from .filters import Patterns
+        _P = Patterns()
+    return _P
+
+
+def is_clear_threat(rec: dict) -> bool:
+    """Violent language with intent aimed at a named person or facility; not news or hypotheticals."""
+    if str(rec.get("category") or "") not in THREAT_CATS:
+        return False
+    text = " ".join(str(post_text(rec)).split())
+    return bool(_VIOLENT.search(text) and _INTENT.search(text) and not _FRAMING.search(text)
+                and _concrete_target(text))
+
+
+def _num(env, name: str, default: float) -> float:
+    try:
+        return float(env.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def spikes(ready: pd.DataFrame, env, now=None) -> list[dict]:
+    """Categories whose recent post count is far above the prior-week average for the same window."""
+    if ready is None or ready.empty or "post_date" not in ready.columns:
+        return []
+    now = pd.Timestamp(now) if now is not None else pd.Timestamp.now(tz="UTC").tz_localize(None)
+    hours = max(1.0, _num(env, "ALERT_SPIKE_WINDOW_HOURS", 6))
+    mult = _num(env, "ALERT_SPIKE_MULTIPLIER", 3)
+    floor = _num(env, "ALERT_SPIKE_MIN_POSTS", 30)
+    base_days = 7
+    when = pd.to_datetime(ready["post_date"], errors="coerce", utc=True).dt.tz_localize(None)
+    cats = ready["category"].fillna("")
+    out = []
+    for name, group in (("threat", THREAT_CATS), ("protest", PROTEST_CATS)):
+        sel = cats.isin(group)
+        recent = int((sel & (when > now - pd.Timedelta(hours=hours)) & (when <= now)).sum())
+        prior_mask = sel & (when > now - pd.Timedelta(days=base_days, hours=hours)) & \
+            (when <= now - pd.Timedelta(hours=hours))
+        avg = int(prior_mask.sum()) / (base_days * 24 / hours)
+        if recent >= floor and recent >= mult * max(avg, 1e-9):
+            out.append({"category": name, "recent": recent, "average": round(avg, 1), "hours": hours,
+                        "bucket": str(now.floor(f"{int(hours)}h"))})
+    return out
+
+
+def _snips(df: pd.DataFrame, n: int = SNIPPETS) -> list[str]:
+    lines = []
+    for rec in df.head(n).to_dict(orient="records"):
         who = str(rec.get("origin_source") or "") or "post"
         lines.append(f"- [{who}] " + " ".join(str(post_text(rec)).split())[:160])
-    lines += ["", base_url.rstrip("/") + "/dashboard"]
-    return subject, "\n".join(lines)
+    return lines
 
 
-def announce(storage, env=None, df: pd.DataFrame | None = None) -> dict:
-    """Send one message for posts that passed Claude's filter and were not announced before."""
+def compose(threats: pd.DataFrame, spike_list: list[dict], ready: pd.DataFrame, base_url: str):
+    link = base_url.rstrip("/") + "/dashboard"
+    lines, subject = [], ""
+    if len(threats):
+        subject = "AUKUS monitor: clear threat" + ("s" if len(threats) != 1 else "") + " flagged"
+        lines += [subject + ".", "Violent language with intent aimed at a named person or facility.", ""]
+        lines += _snips(threats, 3) + [""]
+    for sp in spike_list:
+        head = (f"Spike: {sp['recent']} {sp['category']} posts in {sp['hours']:g}h "
+                f"vs {sp['average']} average")
+        subject = subject or "AUKUS monitor: " + head
+        lines += [head + ".", ""]
+        cats = THREAT_CATS if sp["category"] == "threat" else PROTEST_CATS
+        lines += _snips(ready[ready["category"].fillna("").isin(cats)]) + [""]
+    return subject, "\n".join(lines + [link])
+
+
+def announce(storage, env=None, df: pd.DataFrame | None = None, now=None) -> dict:
+    """Send an alert only for a clear threat or a spike; everything else waits on the dashboard."""
     env = os.environ if env is None else env
     df = unified.load(storage) if df is None else df
     ready = ready_for_review(df)
@@ -129,14 +219,19 @@ def announce(storage, env=None, df: pd.DataFrame | None = None) -> dict:
     recs = ready.to_dict(orient="records")
     keys = [_key(r) for r in recs]
     seen = storage.notified_keys()
-    if not seen:  # first run: record what is already there and stay quiet
-        storage.mark_notified(keys)
-        return {"seeded": len(keys)}
-    mask = [bool(k not in seen and k[1]) for k in keys]
-    new = ready[mask]
-    if new.empty:
+    danger = [bool(is_clear_threat(r)) for r in recs]
+    if not seen:  # first run: record the backlog quietly, but never swallow a clear threat
+        storage.mark_notified([k for k, d in zip(keys, danger) if not d])
+        seen = storage.notified_keys()
+    mask = [bool(d and k[1] and k not in seen) for k, d in zip(keys, danger)]
+    threats = ready[mask]
+    spike_list = []
+    for sp in spikes(ready, env, now):
+        if ("spike", f"{sp['category']}:{sp['bucket']}") not in seen:
+            spike_list.append(sp)
+    if threats.empty and not spike_list:
         return {"new": 0}
-    subject, text = compose(new, env.get("RENDER_EXTERNAL_URL") or env.get("APP_URL") or "")
+    subject, text = compose(threats, spike_list, ready, env.get("RENDER_EXTERNAL_URL") or env.get("APP_URL") or "")
     sent = []
     if env.get("ALERT_WEBHOOK_URL"):
         try:
@@ -150,6 +245,7 @@ def announce(storage, env=None, df: pd.DataFrame | None = None) -> dict:
             sent.append("email")
         except Exception as exc:  # noqa: BLE001
             log.warning("email alert failed: %s", type(exc).__name__)
-    if sent:  # keep unsent posts pending so the next run retries
-        storage.mark_notified([k for k, m in zip(keys, mask) if m])
-    return {"new": len(new), "sent": sent}
+    if sent:  # unsent alerts stay pending so the next run retries
+        storage.mark_notified([k for k, m in zip(keys, mask) if m]
+                              + [("spike", f"{sp['category']}:{sp['bucket']}") for sp in spike_list])
+    return {"threats": len(threats), "spikes": [s["category"] for s in spike_list], "sent": sent}

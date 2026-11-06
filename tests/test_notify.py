@@ -15,35 +15,69 @@ def _store(tmp_path, n=2):
     return st
 
 
-def test_first_run_seeds_then_alerts_only_on_new_posts(tmp_path, monkeypatch):
+def _row(i, text, cat="threat", date="2026-11-04"):
+    return {"Document ID": i, "Date": date, "URL": f"https://x.com/a/{i}", "Hit Sentence": text,
+            "Author Handle": "@b", "Engagement": 1, "category": cat, "is_flagged": True, "is_genuine": True,
+            "refined_category": cat, "post_date": pd.Timestamp(date), "post_month": date[:7], "origin_source": "X"}
+
+
+def _add(st, rows):
+    df = pd.DataFrame(rows)
+    st.save_run(rows_to_store(df, df), ["t.xlsx"], len(df))
+
+
+ENV = {"ALERT_WEBHOOK_URL": "https://hooks.example/x", "RENDER_EXTERNAL_URL": "https://app.example"}
+
+
+def test_ordinary_new_posts_send_nothing(tmp_path, monkeypatch):
     st = _store(tmp_path)
     sent = []
     monkeypatch.setattr(notify, "_post_webhook", lambda url, text, title="": sent.append(text))
-    env = {"ALERT_WEBHOOK_URL": "https://hooks.example/x", "RENDER_EXTERNAL_URL": "https://app.example"}
-    assert notify.announce(st, env) == {"seeded": 2} and sent == []
-    assert notify.announce(st, env) == {"new": 0}
-    df = pd.DataFrame([{"Document ID": "d9", "Date": "2026-11-04", "URL": "https://x.com/a/9",
-                        "Hit Sentence": "Blockade the Henderson shipyard Friday, bring banners", "Author Handle": "@b",
-                        "Engagement": 1, "category": "threat", "is_flagged": True, "is_genuine": True,
-                        "refined_category": "threat", "post_date": pd.Timestamp("2026-11-04"),
-                        "post_month": "2026-11", "origin_source": "Bluesky"}])
-    st.save_run(rows_to_store(df, df), ["t.xlsx"], 1)
-    out = notify.announce(st, env)
-    assert out == {"new": 1, "sent": ["webhook"]}
-    assert "1 threat" in sent[0] and "https://app.example/dashboard" in sent[0]
-    assert notify.announce(st, env) == {"new": 0}  # not announced twice
+    assert notify.announce(st, ENV) == {"new": 0}
+    _add(st, [_row("n1", "Rally Saturday at Town Hall Perth against AUKUS", "protest")])
+    assert notify.announce(st, ENV) == {"new": 0} and sent == []
 
 
-def test_unsent_posts_stay_pending_when_no_channel(tmp_path):
-    st = _store(tmp_path, 1)
-    assert notify.announce(st, {}) == {"seeded": 1}
-    df = pd.DataFrame([{"Document ID": "z", "Date": "2026-11-04", "URL": "https://x.com/a/z",
-                        "Hit Sentence": "Rally Saturday at Town Hall Perth against AUKUS", "Author Handle": "@c",
-                        "Engagement": 1, "category": "protest", "is_flagged": True, "is_genuine": True,
-                        "refined_category": "protest", "post_date": pd.Timestamp("2026-11-04"), "post_month": "2026-11"}])
-    st.save_run(rows_to_store(df, df), ["t.xlsx"], 1)
-    assert notify.announce(st, {}) == {"new": 1, "sent": []}
-    assert notify.announce(st, {})["new"] == 1  # still pending until a channel exists
+def test_clear_threat_alerts_once(tmp_path, monkeypatch):
+    st = _store(tmp_path)
+    sent = []
+    monkeypatch.setattr(notify, "_post_webhook", lambda url, text, title="": sent.append(text))
+    notify.announce(st, ENV)
+    _add(st, [_row("t1", "I will blow up HMAS Stirling this weekend")])
+    out = notify.announce(st, ENV)
+    assert out["threats"] == 1 and out["sent"] == ["webhook"]
+    assert "clear threat" in sent[0] and "https://app.example/dashboard" in sent[0]
+    assert notify.announce(st, ENV) == {"new": 0}
+    assert len(sent) == 1
+
+
+def test_unsent_threat_stays_pending_without_a_channel(tmp_path):
+    st = _store(tmp_path)
+    notify.announce(st, {})
+    _add(st, [_row("t2", "I will blow up HMAS Stirling this weekend")])
+    assert notify.announce(st, {}) == {"threats": 1, "spikes": [], "sent": []}
+    assert notify.announce(st, {})["threats"] == 1
+
+
+def test_ambiguous_threat_language_does_not_alert():
+    for t in ("Kill the AUKUS deal now", "Defence minister said they would kill the program",
+              "Russia could attack the submarine base", "Shoot the messenger, said the senator"):
+        assert not notify.is_clear_threat({"category": "threat", "Hit Sentence": t}), t
+    assert notify.is_clear_threat({"category": "threat", "Hit Sentence": "Someone should shoot the defence minister"})
+
+
+def test_spike_needs_ratio_and_floor():
+    now = pd.Timestamp("2026-11-06 12:00")
+
+    def frame(recent, prior):
+        rows = [{"category": "protest", "post_date": now - pd.Timedelta(hours=1)}] * recent
+        rows += [{"category": "protest", "post_date": now - pd.Timedelta(days=2)}] * prior
+        return pd.DataFrame(rows)
+    env = {}
+    assert [s["category"] for s in notify.spikes(frame(40, 56), env, now)] == ["protest"]
+    assert notify.spikes(frame(20, 0), env, now) == []        # below the 30-post floor
+    assert notify.spikes(frame(40, 560), env, now) == []      # busy week: 40 is under 3x the average
+    assert notify.spikes(frame(40, 56), {"ALERT_SPIKE_MIN_POSTS": "100"}, now) == []
 
 
 def test_rejected_and_unreviewed_posts_are_not_ready():
