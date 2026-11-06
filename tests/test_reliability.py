@@ -367,6 +367,126 @@ def test_crash_after_paid_batch_is_not_repeated(tmp_path, monkeypatch):
     assert any(second in user for user in calls)
 
 
+def test_save_failed_job_resumes_without_paying_again(tmp_path, monkeypatch):
+    """A save failure keeps the paid batches, and the resumed job does not buy them twice."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MONTHLY_POST_CAP", raising=False)
+    monkeypatch.setenv("REFINE_BATCH_SIZE", "1")
+    monkeypatch.setenv("HEAT_MAX_POSTS", "0")
+    url = f"sqlite:///{tmp_path/'again.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("JOB_DIR", str(tmp_path / "jobs"))
+    from triage.pipeline import SaveFailed, process
+    from triage.storage import Storage
+    import triage.jobs as jobs
+    jobs._engine = None
+    jobs._engine_url = ""
+    jobs._jobs.clear()
+    jobs.JOB_DIR = tmp_path / "jobs"
+    first = "kill the AUKUS deal tomorrow at the gate"
+    second = "bomb HMAS Stirling next week in the yard"
+    data = _book([
+        {"Document ID": "P1", "URL": "https://x.com/a/1", "Engagement": 9, "Hit Sentence": first},
+        {"Document ID": "P2", "URL": "https://x.com/b/2", "Engagement": 8, "Hit Sentence": second},
+    ])
+    inner = Storage(url)
+
+    class Flaky:
+        def __init__(self):
+            self.saves = 0
+
+        def reuse_index(self, *args, **kwargs):
+            return inner.reuse_index(*args, **kwargs)
+
+        def save_run(self, *args, **kwargs):
+            self.saves += 1
+            if self.saves == 1:
+                raise RuntimeError("db down")
+            return inner.save_run(*args, **kwargs)
+
+    flaky = Flaky()
+    calls = []
+
+    def fake(system, user):
+        calls.append(user)
+        posts = __import__("json").loads(user)["posts"]
+        return __import__("json").dumps({"results": [
+            {"id": p["id"], "is_genuine": True, "refined_category": "threat",
+             "severity": "low", "threat_type": "violence", "targets": ["AUKUS"],
+             "narrative_summary": "kept"} for p in posts]})
+
+    def work(progress):
+        result = process([("a.xlsx", data)], refine_fn=fake, heat_fn=fake, storage=flaky,
+                         progress=progress, checkpoint=jobs.JobCheckpoint(jobs.current_jid()))
+        if result.saved is False:
+            raise SaveFailed("Results were not saved to the database. Completed reviews were kept.")
+        return {"payload": b"ok", "rows": result.screened_rows, "message": "saved"}
+
+    jid = jobs.start("screen", work, filenames="a.xlsx", inputs=[("a.xlsx", data)])
+    for _ in range(80):
+        got = jobs.get(jid)
+        if got and got["state"] == "error":
+            break
+        time.sleep(0.05)
+    assert jobs.get(jid)["state"] == "error"
+    assert jobs.get(jid)["stage"] == jobs.SAVE_FAILED_STAGE
+    assert calls and first in calls[0]
+    paid = list(calls)
+    saved_ids = {row.get("document_id") for row in jobs.load_batches(jid)}
+    assert saved_ids >= {"P1", "P2"}
+    calls.clear()
+    stats = jobs.resume_pending(lambda files: work)
+    assert stats["resumed"] == 1
+    for _ in range(80):
+        if jobs.get(jid)["state"] == "done":
+            break
+        time.sleep(0.05)
+    assert jobs.get(jid)["state"] == "done", jobs.get(jid)
+    assert calls == [], calls
+    assert flaky.saves == 2
+    assert set(inner.load_posts()["Document ID"]) >= {"P1", "P2"}
+    assert paid  # the first pass really was charged
+
+
+def test_checkpoint_sequence_is_unique_when_batches_race(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path/'seq.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    import triage.jobs as jobs
+    jobs._engine = None
+    jobs._engine_url = ""
+    jobs._jobs.clear()
+    jobs._worker_id = "owner"
+    now = datetime.now(timezone.utc)
+    with jobs._eng().begin() as conn:
+        conn.execute(jobs.jobs_table.insert().values(
+            id="c1", kind="screen", state="running", stage="Reviewing flagged posts",
+            done=0, total=8, message="", error="", filenames="a.xlsx", rows=8,
+            has_download=0, started=now, updated=now, resume_token="owner",
+            lease_until=now))
+    errors = []
+
+    def add(i):
+        try:
+            jobs.append_batch("c1", "refine", [{
+                "document_id": f"d{i}", "refined_category": "threat", "narrative_summary": "kept",
+            }])
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [__import__("threading").Thread(target=add, args=(i,)) for i in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == [], errors
+    rows = jobs.load_batches("c1")
+    assert len(rows) == 8
+    with jobs._eng().connect() as conn:
+        seqs = [r[0] for r in conn.execute(text(
+            "SELECT seq FROM upload_job_checkpoints WHERE job_id='c1' ORDER BY seq"))]
+    assert seqs == list(range(1, 9))
+
+
 def test_save_failure_keeps_recovery_inputs(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path/'save.db'}"
     monkeypatch.setenv("DATABASE_URL", url)

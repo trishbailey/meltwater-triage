@@ -81,28 +81,6 @@ def _s(value) -> str:
     return str(value)
 
 
-def _short_label(name: str) -> str:
-    aliases = {
-        "Osborne Naval Shipyard": "Osborne",
-        "Australian Submarine Agency HQ (Majura Park)": "ASA Majura",
-        "BAE Systems Edinburgh": "BAE Edinburgh",
-        "Naval Communication Station Harold Holt": "Harold Holt",
-        "Perth Convention and Exhibition Centre": "Perth CEC",
-        "US Embassy Canberra": "US Embassy",
-        "US Consulate Sydney": "US Consulate SYD",
-        "US Consulate Melbourne": "US Consulate MEL",
-        "Sydney Town Hall": "Sydney Town Hall",
-        "NSW Parliament": "NSW Parliament",
-        "Russell Offices": "Russell Offices",
-        "HMAS Stirling": "HMAS Stirling",
-        "HMAS Kuttabul": "HMAS Kuttabul",
-        "RAAF Tindal": "RAAF Tindal",
-        "Pine Gap": "Pine Gap",
-        "Henderson": "Henderson",
-    }
-    return aliases.get(name, name if len(name) <= 22 else name[:20] + "…")
-
-
 def _event_kind(status: str, upcoming: bool, refined: str, text: str) -> str:
     blob = f"{status} {refined} {text}".lower()
     if "advoc" in blob or any(word in blob for word in ("submission", "petition", "public comment", "have your say")):
@@ -221,7 +199,7 @@ def build_map(posts: pd.DataFrame | None, alerts: pd.DataFrame | None,
 
     assets = []
     for marker in geo.asset_markers():
-        assets.append({**marker, "short": _short_label(marker["label"])})
+        assets.append(dict(marker))
 
     return {
         "assets": assets,

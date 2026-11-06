@@ -268,13 +268,19 @@ def geocode(place: str) -> dict | None:
 
 _SHORT = {
     "Osborne Naval Shipyard": "Osborne",
+    "HMAS Stirling": "Stirling",
+    "HMAS Kuttabul": "Kuttabul",
     "Australian Submarine Agency HQ (Majura Park)": "ASA Majura",
     "BAE Systems Edinburgh": "BAE Edinburgh",
     "Naval Communication Station Harold Holt": "Harold Holt",
     "Perth Convention and Exhibition Centre": "Perth CEC",
     "US Embassy Canberra": "US Embassy",
-    "US Consulate Sydney": "US Consulate SYD",
-    "US Consulate Melbourne": "US Consulate MEL",
+    "US Consulate Sydney": "US Sydney",
+    "US Consulate Melbourne": "US Melbourne",
+    "Sydney Town Hall": "Town Hall",
+    "NSW Parliament": "NSW Parl",
+    "Russell Offices": "Russell",
+    "RAAF Tindal": "Tindal",
 }
 # Nudge labels apart where sites sit on top of each other at country zoom.
 _SIDE = {

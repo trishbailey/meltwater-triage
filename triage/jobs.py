@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Callable
 
 from sqlalchemy import (Column, DateTime, Integer, LargeBinary, MetaData, String, Table, Text,
-                        create_engine, delete, func, or_, select, update)
+                        UniqueConstraint, create_engine, delete, event, func, or_, select, update)
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .schema import ensure_schema
@@ -38,6 +39,9 @@ class InputNotStored(RuntimeError):
 
 class LeaseLost(RuntimeError):
     """This worker no longer owns the job, so its writes were ignored."""
+
+
+SAVE_FAILED_STAGE = "Save failed"
 JOB_DIR = Path(os.environ.get("JOB_DIR", "/tmp/mt-jobs"))
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -83,6 +87,7 @@ job_checkpoints = Table(
     Column("seq", Integer, nullable=False),
     Column("kind", String(16), nullable=False),
     Column("body", Text, nullable=False),
+    UniqueConstraint("job_id", "seq", name="uq_job_checkpoint_seq"),
 )
 
 job_inputs = Table(
@@ -118,6 +123,12 @@ def _eng():
     if _engine is None or _engine_url != url:
         _engine = create_engine(url, pool_pre_ping=True)
         _engine_url = url
+        if _engine.dialect.name == "sqlite":
+            @event.listens_for(_engine, "connect")
+            def _busy_timeout(dbapi_conn, _record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.close()
         ensure_schema(_engine, metadata)
         JOB_DIR.mkdir(parents=True, exist_ok=True)
     return _engine
@@ -373,24 +384,34 @@ def load_batches(jid: str) -> list[dict]:
 
 
 def append_batch(jid: str, kind: str, records: list[dict]) -> None:
-    """Insert one completed batch only if this worker still owns the lease."""
+    """Insert one completed batch only if this worker still owns the lease.
+
+    The job row is locked first, then the next sequence number is taken. A unique
+    (job, seq) constraint retries the rare case where two batches still collide.
+    """
     if not records:
         return
     if not _use_db():
         raise LeaseLost("No database for the review checkpoint.")
     body = json.dumps(records, default=_json_default)
-    with _eng().begin() as conn:
-        owned = conn.execute(
-            update(jobs_table)
-            .where(jobs_table.c.id == jid, jobs_table.c.resume_token == _worker_id,
-                   jobs_table.c.state == "running")
-            .values(updated=_utc(), lease_until=_lease_deadline()))
-        if owned.rowcount != 1:
-            raise LeaseLost("Lost the job lease before the batch could be saved.")
-        seq = conn.execute(
-            select(func.max(job_checkpoints.c.seq)).where(job_checkpoints.c.job_id == jid)).scalar()
-        conn.execute(job_checkpoints.insert().values(
-            job_id=jid, seq=int(seq or 0) + 1, kind=kind[:16], body=body))
+    for _attempt in range(6):
+        try:
+            with _eng().begin() as conn:
+                owned = conn.execute(
+                    update(jobs_table)
+                    .where(jobs_table.c.id == jid, jobs_table.c.resume_token == _worker_id,
+                           jobs_table.c.state == "running")
+                    .values(updated=_utc(), lease_until=_lease_deadline()))
+                if owned.rowcount != 1:
+                    raise LeaseLost("Lost the job lease before the batch could be saved.")
+                seq = conn.execute(
+                    select(func.max(job_checkpoints.c.seq)).where(job_checkpoints.c.job_id == jid)).scalar()
+                conn.execute(job_checkpoints.insert().values(
+                    job_id=jid, seq=int(seq or 0) + 1, kind=kind[:16], body=body))
+            return
+        except IntegrityError:
+            continue
+    raise LeaseLost("Could not store the review batch.")
 
 
 def _json_default(value):
@@ -427,18 +448,21 @@ def _spawn(jid: str, work: Callable) -> None:
             _update_db(jid, snap, payload=payload, release_inputs=True)
             del payload
         except Exception as exc:
-            if type(exc).__name__ == "SaveFailed" or isinstance(exc, ValueError):
+            save_failed = type(exc).__name__ == "SaveFailed"
+            if save_failed or isinstance(exc, ValueError):
                 msg = str(exc)[:400]
             else:
                 msg = "Could not process the upload."
                 log.warning("job failed: %s", type(exc).__name__)
+            stage = SAVE_FAILED_STAGE if save_failed else "Interrupted"
             with _lock:
                 if jid in _jobs:
-                    _jobs[jid].update(state="error", error=msg, updated=time.time(), _ts=time.time())
+                    _jobs[jid].update(state="error", error=msg, stage=stage,
+                                      updated=time.time(), _ts=time.time())
                     snap = dict(_jobs[jid])
                 else:
-                    snap = {"state": "error", "error": msg, "stage": "Interrupted"}
-            # Keep the stored file and review batches so a later resume does not pay again.
+                    snap = {"state": "error", "error": msg, "stage": stage}
+            # Keep the stored file and review batches. A save failure is resumed later.
             _update_db(jid, snap, release_inputs=False)
         finally:
             stop.set()
@@ -486,11 +510,13 @@ def start(kind: str, work: Callable[[Callable], dict], *, filenames: str = "", r
     return jid
 
 
-def _claim(jid: str, seen_token) -> bool:
-    """Take a running job only when its lease has expired and the token is unchanged.
+def _claim(jid: str, seen_token, *, save_failed: bool = False) -> bool:
+    """Take a job whose lease has expired, or a finished save-failed job.
 
     The lease check is done in Python. SQLite stores datetimes as text, and a
-    SQL comparison of those strings is not a time comparison.
+    SQL comparison of those strings is not a time comparison. A save-failed job
+    has already stopped heartbeating, so it can be claimed without waiting out
+    the leftover lease. The token compare-and-swap still fences the old worker.
     """
     try:
         now = _utc()
@@ -498,20 +524,29 @@ def _claim(jid: str, seen_token) -> bool:
             jobs_table.c.resume_token == seen_token)
         with _eng().begin() as conn:
             row = conn.execute(
-                select(jobs_table.c.state, jobs_table.c.resume_token, jobs_table.c.lease_until)
+                select(jobs_table.c.state, jobs_table.c.resume_token, jobs_table.c.lease_until,
+                       jobs_table.c.stage)
                 .where(jobs_table.c.id == jid)).first()
-            if not row or row[0] != "running":
+            if not row:
                 return False
             if (row[1] or None) != (seen_token or None):
                 return False
-            lease_dt = _as_dt(row[2])
-            if lease_dt is not None and lease_dt > now:
-                return False
+            if save_failed:
+                if row[0] != "error" or row[3] != SAVE_FAILED_STAGE:
+                    return False
+            else:
+                if row[0] != "running":
+                    return False
+                lease_dt = _as_dt(row[2])
+                if lease_dt is not None and lease_dt > now:
+                    return False
+            state_cond = (jobs_table.c.state == "error") if save_failed else (
+                jobs_table.c.state == "running")
             res = conn.execute(
                 update(jobs_table)
-                .where(jobs_table.c.id == jid, jobs_table.c.state == "running", token_cond)
+                .where(jobs_table.c.id == jid, state_cond, token_cond)
                 .values(resume_token=_worker_id, updated=now, lease_until=_lease_deadline(),
-                        stage="Resuming after a restart"))
+                        state="running", error="", stage="Resuming after a restart"))
             return res.rowcount == 1
     except Exception as exc:
         log.warning("Job claim failed: %s", type(exc).__name__)
@@ -529,33 +564,44 @@ def resume_pending(factory: Callable | None = None) -> dict:
     if not _use_db():
         return {"resumed": 0, "interrupted": 0}
     try:
+        recoverable = or_(
+            jobs_table.c.state == "running",
+            (jobs_table.c.state == "error") & (jobs_table.c.stage == SAVE_FAILED_STAGE),
+        )
         with _eng().connect() as conn:
             rows = conn.execute(
-                select(jobs_table.c.id, jobs_table.c.resume_token, jobs_table.c.lease_until)
-                .where(jobs_table.c.state == "running")).all()
+                select(jobs_table.c.id, jobs_table.c.resume_token, jobs_table.c.lease_until,
+                       jobs_table.c.state, jobs_table.c.stage)
+                .where(recoverable)).all()
     except Exception as exc:
         log.warning("resume_pending failed: %s", type(exc).__name__)
         try:
             ensure_schema(_eng(), metadata)
             with _eng().connect() as conn:
                 rows = conn.execute(
-                    select(jobs_table.c.id, jobs_table.c.resume_token, jobs_table.c.lease_until)
-                    .where(jobs_table.c.state == "running")).all()
+                    select(jobs_table.c.id, jobs_table.c.resume_token, jobs_table.c.lease_until,
+                           jobs_table.c.state, jobs_table.c.stage)
+                    .where(or_(
+                        jobs_table.c.state == "running",
+                        (jobs_table.c.state == "error") & (jobs_table.c.stage == SAVE_FAILED_STAGE),
+                    ))).all()
         except Exception as exc2:
             log.warning("resume_pending retry failed: %s", type(exc2).__name__)
             return {"resumed": 0, "interrupted": 0}
     now = _utc()
-    for jid, token, lease in rows:
+    for jid, token, lease, state, stage in rows:
+        save_failed = state == "error" and stage == SAVE_FAILED_STAGE
         with _lock:
             if jid in _jobs and _jobs[jid].get("state") == "running":
                 continue
-        lease_dt = _as_dt(lease)
-        # A live worker, including one from an overlapping deploy, still holds the lease.
-        if lease_dt is not None and lease_dt > now and token != _worker_id:
-            continue
-        if token == _worker_id:
-            continue
-        if not _claim(jid, token):
+        if not save_failed:
+            lease_dt = _as_dt(lease)
+            # A live worker, including one from an overlapping deploy, still holds the lease.
+            if lease_dt is not None and lease_dt > now and token != _worker_id:
+                continue
+            if token == _worker_id:
+                continue
+        if not _claim(jid, token, save_failed=save_failed):
             continue
         files = _load_inputs(jid)
         if not files or factory is None:

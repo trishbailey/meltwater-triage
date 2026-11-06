@@ -81,6 +81,13 @@ def test_basemap_and_phone_layout(client):
     assert "World_Dark_Gray_Base" not in html
     assert "API KEY REQUIRED" not in html
     assert "@media (max-width:390px)" in html
+    assert "map-labels.js" in html and "zoomend moveend" in html
+    assert "paddingTopLeft" in html and "maxZoom: narrow ? 4 : 5" in html
+    assert ".dash-map{height:520px}" in html
+    assert "map-label{font-size:13px}" in html
+    assert "map-label{font-size:11px}" not in html
+    assert "map-label{font-size:10px}" not in html
+    assert "bindTooltip" not in html
     assert "post-row" in html
     assert "google-analytics" not in html and "Trish" not in html
     assert "Meltwater" not in html.split('id="map-legend"')[-1].split("</section>")[0]
