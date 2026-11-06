@@ -129,13 +129,6 @@ input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
 <input id="files" type="file" name="files" accept=".xlsx,.csv,.pdf" multiple required>
 <p style="margin-top:10px"><button class="btn primary" type="submit">Screen posts</button></p></form>
 </div>
-<div class="card" id="recent-downloads"{% if not recent_downloads %} hidden{% endif %}>
-<h3>Recent Excel exports</h3>
-<p>Downloads from finished uploads (kept for 7 days).</p>
-<ul class="dl-list">{% for d in recent_downloads %}
-<li data-job="{{ d.id }}"><a href="/jobs/{{ d.id }}/download">{{ d.filenames or "Flagged posts" }}</a></li>
-{% endfor %}</ul>
-</div>
 <p><a href="/status">Usage and storage status</a></p>
 </aside>
 <div class="main">
@@ -148,7 +141,6 @@ input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
 b.addEventListener("click",function(){var open=document.body.classList.toggle("drawer-open");b.setAttribute("aria-expanded",open?"true":"false");});
 })();
 </script>
-<script src="{{ url_for('static', filename='recent-exports.js') }}"></script>
 {% include "_progress.html" %}
 <script>
 (function(){
