@@ -1,12 +1,17 @@
-"""Background upload jobs with status shared across workers via Postgres (or memory).
+"""Background upload jobs. Status and the Excel file live in Postgres (or SQLite).
 
-Status (stage, done, total, message) is stored in the database whenever
-DATABASE_URL is set, so a status poll never hits an empty in-memory map on
-another worker or after a deploy. The Excel download bytes are written under
-JOB_DIR and cleaned up after JOB_TTL_SECONDS.
+`create_all` does not add columns to a table that already exists. `ensure_schema`
+adds `payload` (and any later columns) before a status read, so a pre-existing
+upload_jobs table does not raise ProgrammingError and turn into a 404.
+
+The uploaded bytes are stored before the worker thread starts. After a process
+restart, a still-running job is claimed and screened again from those bytes.
+Posts already saved are reused by document id, URL, and text hash, so a second
+pass does not delete anything and does not re-send those posts for review.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import secrets
@@ -16,17 +21,39 @@ from pathlib import Path
 from typing import Callable
 
 from sqlalchemy import (Column, DateTime, Integer, LargeBinary, MetaData, String, Table, Text,
-                        create_engine, delete, select, update)
+                        UniqueConstraint, create_engine, delete, event, func, or_, select, update)
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from .schema import ensure_schema
 from .storage import normalize_database_url, persistence_enabled
 
 log = logging.getLogger(__name__)
-JOB_TTL_SECONDS = int(os.environ.get("JOB_TTL_SECONDS", str(7 * 24 * 3600)))  # Excel downloads kept 7 days
+JOB_TTL_SECONDS = int(os.environ.get("JOB_TTL_SECONDS", str(7 * 24 * 3600)))
+LEASE_SECONDS = int(os.environ.get("JOB_LEASE_SECONDS", "30"))
+
+
+class InputNotStored(RuntimeError):
+    """The upload bytes are not durable. Do not start paid work or return 202."""
+
+
+class LeaseLost(RuntimeError):
+    """This worker no longer owns the job, so its writes were ignored."""
+
+
+SAVE_FAILED_STAGE = "Save failed"
 JOB_DIR = Path(os.environ.get("JOB_DIR", "/tmp/mt-jobs"))
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 _engine = None
+_engine_url = ""
+_resume_factory: Callable | None = None
+_worker_id = f"{os.getpid()}-{secrets.token_hex(4)}"
+_tls = threading.local()
+
+
+def current_jid() -> str | None:
+    return getattr(_tls, "jid", None)
 metadata = MetaData()
 
 jobs_table = Table(
@@ -48,7 +75,42 @@ jobs_table = Table(
     Column("started", DateTime(timezone=True), nullable=False),
     Column("updated", DateTime(timezone=True), nullable=False),
     Column("payload", LargeBinary),
+    Column("checkpoint", Text),
+    Column("resume_token", String(64)),
+    Column("lease_until", DateTime(timezone=True)),
 )
+
+job_checkpoints = Table(
+    "upload_job_checkpoints", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("job_id", String(64), nullable=False, index=True),
+    Column("seq", Integer, nullable=False),
+    Column("kind", String(16), nullable=False),
+    Column("body", Text, nullable=False),
+    UniqueConstraint("job_id", "seq", name="uq_job_checkpoint_seq"),
+)
+
+job_inputs = Table(
+    "upload_job_inputs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("job_id", String(64), nullable=False, index=True),
+    Column("seq", Integer, nullable=False),
+    Column("filename", Text, nullable=False),
+    Column("body", LargeBinary, nullable=False),
+)
+
+# Status polls must not load the Excel blob.
+_STATUS_COLS = (
+    "id", "kind", "state", "stage", "done", "total", "message", "error", "filenames",
+    "rows", "added", "skipped", "items", "has_download", "started", "updated",
+    "checkpoint", "resume_token", "lease_until",
+)
+
+
+def set_resume_factory(factory: Callable) -> None:
+    """factory(files) -> work(progress) used to continue a job after a restart."""
+    global _resume_factory
+    _resume_factory = factory
 
 
 def _use_db() -> bool:
@@ -56,11 +118,18 @@ def _use_db() -> bool:
 
 
 def _eng():
-    global _engine
-    if _engine is None:
-        from .storage import database_url
-        _engine = create_engine(normalize_database_url(database_url()), pool_pre_ping=True)
-        metadata.create_all(_engine)
+    global _engine, _engine_url
+    url = normalize_database_url(__import__("triage.storage", fromlist=["database_url"]).database_url())
+    if _engine is None or _engine_url != url:
+        _engine = create_engine(url, pool_pre_ping=True)
+        _engine_url = url
+        if _engine.dialect.name == "sqlite":
+            @event.listens_for(_engine, "connect")
+            def _busy_timeout(dbapi_conn, _record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.close()
+        ensure_schema(_engine, metadata)
         JOB_DIR.mkdir(parents=True, exist_ok=True)
     return _engine
 
@@ -68,6 +137,42 @@ def _eng():
 def _utc():
     from datetime import datetime, timezone
     return datetime.now(timezone.utc)
+
+
+def _lease_deadline():
+    from datetime import timedelta
+    return _utc() + timedelta(seconds=max(5, LEASE_SECONDS))
+
+
+def _as_dt(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        from datetime import datetime, timezone
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if hasattr(value, "tzinfo"):
+        if value.tzinfo is None:
+            from datetime import timezone
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    return None
+
+
+def _status_select():
+    return select(*[jobs_table.c[name] for name in _STATUS_COLS])
+
+
+def _row_to_public_dict(row) -> dict:
+    out = {name: row[name] for name in _STATUS_COLS}
+    out["has_download"] = bool(out.get("has_download"))
+    started = out.get("started")
+    updated = out.get("updated")
+    out["started"] = started.timestamp() if hasattr(started, "timestamp") else time.time()
+    out["updated"] = updated.timestamp() if hasattr(updated, "timestamp") else time.time()
+    return out
 
 
 def _prune(now: float) -> None:
@@ -86,17 +191,34 @@ def _prune(now: float) -> None:
             with _eng().begin() as conn:
                 old = conn.execute(select(jobs_table.c.id).where(
                     jobs_table.c.state != "running", jobs_table.c.updated < cutoff)).all()
-                for (jid,) in old:
+                ids = [jid for (jid,) in old]
+                for jid in ids:
                     p = JOB_DIR / f"{jid}.bin"
                     if p.exists():
                         try:
                             p.unlink()
                         except OSError:
                             pass
-                conn.execute(delete(jobs_table).where(
-                    jobs_table.c.state != "running", jobs_table.c.updated < cutoff))
+                if ids:
+                    conn.execute(delete(job_inputs).where(job_inputs.c.job_id.in_(ids)))
+                    conn.execute(delete(jobs_table).where(jobs_table.c.id.in_(ids)))
         except Exception as exc:
             log.warning("Job prune failed: %s", type(exc).__name__)
+
+
+def _base_row(jid: str, fields: dict) -> dict:
+    now = _utc()
+    return {"id": jid, "started": fields.get("started_at") or now, "updated": now,
+            "kind": fields.get("kind", ""), "state": fields.get("state", "running"),
+            "stage": fields.get("stage", ""), "done": int(fields.get("done") or 0),
+            "total": int(fields.get("total") or 0), "message": fields.get("message") or "",
+            "error": fields.get("error") or "", "filenames": fields.get("filenames") or "",
+            "rows": int(fields.get("rows") or 0), "added": fields.get("added"),
+            "skipped": fields.get("skipped"), "items": fields.get("items"),
+            "has_download": 1 if fields.get("has_download") else 0,
+            "checkpoint": fields.get("checkpoint") or "",
+            "resume_token": fields.get("resume_token") or _worker_id,
+            "lease_until": _lease_deadline()}
 
 
 def _write_db(jid: str, fields: dict) -> None:
@@ -104,17 +226,8 @@ def _write_db(jid: str, fields: dict) -> None:
         return
     try:
         eng = _eng()
-        now = _utc()
-        row = {"id": jid, "started": now, "updated": now,
-               "kind": fields.get("kind", ""), "state": fields.get("state", "running"),
-               "stage": fields.get("stage", ""), "done": int(fields.get("done") or 0),
-               "total": int(fields.get("total") or 0), "message": fields.get("message") or "",
-               "error": fields.get("error") or "", "filenames": fields.get("filenames") or "",
-               "rows": int(fields.get("rows") or 0), "added": fields.get("added"),
-               "skipped": fields.get("skipped"), "items": fields.get("items"),
-               "has_download": 1 if fields.get("has_download") else 0}
+        row = _base_row(jid, fields)
         with eng.begin() as conn:
-            # Upsert works on Postgres; SQLite falls back to delete+insert.
             url = str(eng.url)
             if url.startswith("postgresql"):
                 stmt = pg_insert(jobs_table).values(**row)
@@ -127,140 +240,449 @@ def _write_db(jid: str, fields: dict) -> None:
         log.warning("Job status write failed: %s", type(exc).__name__)
 
 
-def _update_db(jid: str, fields: dict, payload: bytes | None = None) -> None:
+def _owns():
+    """This worker may write a row it already owns, or a row nobody has claimed."""
+    return or_(jobs_table.c.resume_token == _worker_id, jobs_table.c.resume_token.is_(None))
+
+
+def _update_db(jid: str, fields: dict, payload: bytes | None = None, release_inputs: bool = False) -> bool:
+    """Write status only while this worker holds the resume token. Returns whether the write landed."""
     if not _use_db():
-        return
-    try:
-        vals = {k: fields[k] for k in ("state", "stage", "done", "total", "message", "error",
-                                       "filenames", "rows", "added", "skipped", "items") if k in fields}
-        if "has_download" in fields:
-            vals["has_download"] = 1 if fields["has_download"] else 0
-        if payload is not None:
-            vals["payload"] = payload
-            vals["has_download"] = 1
-        vals["updated"] = _utc()
+        return False
+    vals = {k: fields[k] for k in ("state", "stage", "done", "total", "message", "error",
+                                   "filenames", "rows", "added", "skipped", "items",
+                                   "checkpoint") if k in fields}
+    if "has_download" in fields:
+        vals["has_download"] = 1 if fields["has_download"] else 0
+    if payload is not None:
+        vals["payload"] = payload
+        vals["has_download"] = 1
+    vals["updated"] = _utc()
+    vals["resume_token"] = _worker_id
+    vals["lease_until"] = _lease_deadline()
+
+    def _run() -> bool:
         with _eng().begin() as conn:
-            # Ensure payload column exists on older DBs
-            try:
-                conn.execute(update(jobs_table).where(jobs_table.c.id == jid).values(**vals))
-            except Exception:
-                metadata.create_all(_eng())
-                conn.execute(update(jobs_table).where(jobs_table.c.id == jid).values(**vals))
+            res = conn.execute(
+                update(jobs_table).where(jobs_table.c.id == jid, _owns()).values(**vals))
+            if res.rowcount != 1:
+                return False
+            if release_inputs and fields.get("state") == "done":
+                conn.execute(delete(job_inputs).where(job_inputs.c.job_id == jid))
+                conn.execute(delete(job_checkpoints).where(job_checkpoints.c.job_id == jid))
+            return True
+
+    try:
+        return _run()
     except Exception as exc:
         log.warning("Job status update failed: %s", type(exc).__name__)
-
-
-
-
-def start(kind: str, work: Callable[[Callable], dict], *, filenames: str = "", rows: int = 0) -> str:
-    jid = secrets.token_urlsafe(16)
-    now = time.time()
-    seed = {"kind": kind, "state": "running", "stage": "File accepted", "done": 0, "total": 0,
-            "message": "", "error": "", "filenames": filenames, "rows": rows,
-            "started": now, "updated": now, "_ts": now}
-    with _lock:
-        _prune(now)
-        _jobs[jid] = {**seed, "id": jid}
-    _write_db(jid, seed)
-
-    def progress(stage: str, done: int = 0, total: int = 0, **extra) -> None:
-        with _lock:
-            _jobs[jid].update(stage=stage, done=int(done), total=int(total), updated=time.time(),
-                              _ts=time.time(), **extra)
-            snap = dict(_jobs[jid])
-        _update_db(jid, snap)
-
-    def run():
         try:
-            result = work(progress) or {}
+            ensure_schema(_eng(), metadata)
+            return _run()
+        except Exception as exc2:
+            log.warning("Job status update retry failed: %s", type(exc2).__name__)
+            return False
+
+
+def _store_inputs(jid: str, files: list[tuple[str, bytes]]) -> None:
+    """Persist every upload byte. Raises InputNotStored instead of continuing."""
+    if not files:
+        raise InputNotStored("No upload bytes to store.")
+    if not _use_db():
+        raise InputNotStored("Database is not configured, so the upload was not accepted.")
+    expected = [((name or "upload")[:300], data if data is not None else b"") for name, data in files]
+    try:
+        with _eng().begin() as conn:
+            conn.execute(delete(job_inputs).where(job_inputs.c.job_id == jid))
+            for seq, (name, data) in enumerate(expected):
+                conn.execute(job_inputs.insert().values(
+                    job_id=jid, seq=seq, filename=name, body=data))
+        loaded = _load_inputs(jid, keep_empty=True)
+        if loaded != expected:
+            raise InputNotStored("Stored upload bytes did not match the file that was accepted.")
+    except InputNotStored:
+        raise
+    except Exception as exc:
+        log.warning("Storing upload bytes failed: %s", type(exc).__name__)
+        raise InputNotStored("Could not store the upload.") from exc
+
+
+def _load_inputs(jid: str, keep_empty: bool = False) -> list[tuple[str, bytes]]:
+    if not _use_db():
+        return []
+    try:
+        with _eng().connect() as conn:
+            rows = conn.execute(
+                select(job_inputs.c.filename, job_inputs.c.body)
+                .where(job_inputs.c.job_id == jid)
+                .order_by(job_inputs.c.seq)).all()
+        out = []
+        for name, body in rows:
+            blob = b"" if body is None else bytes(body)
+            if blob or keep_empty:
+                out.append((name, blob))
+        return out
+    except Exception as exc:
+        log.warning("Loading upload bytes failed: %s", type(exc).__name__)
+        return []
+
+
+def _touch_lease(jid: str) -> bool:
+    if not _use_db():
+        return False
+    try:
+        with _eng().begin() as conn:
+            res = conn.execute(
+                update(jobs_table)
+                .where(jobs_table.c.id == jid, jobs_table.c.resume_token == _worker_id,
+                       jobs_table.c.state == "running")
+                .values(updated=_utc(), lease_until=_lease_deadline()))
+            return res.rowcount == 1
+    except Exception as exc:
+        log.warning("Lease heartbeat failed: %s", type(exc).__name__)
+        return False
+
+
+def _heartbeat_loop(jid: str, stop: threading.Event) -> None:
+    interval = max(1, LEASE_SECONDS // 3)
+    while not stop.wait(interval):
+        if not _touch_lease(jid):
+            break
+
+
+class JobCheckpoint:
+    """Append-only batch store for one job. save() commits before it returns."""
+
+    def __init__(self, jid: str):
+        self.jid = jid
+
+    def load(self) -> list[dict]:
+        return load_batches(self.jid)
+
+    def save(self, kind: str, records: list[dict]) -> None:
+        append_batch(self.jid, kind, records)
+
+
+def load_batches(jid: str) -> list[dict]:
+    if not jid or not _use_db():
+        return []
+    try:
+        with _eng().connect() as conn:
+            rows = conn.execute(
+                select(job_checkpoints.c.body)
+                .where(job_checkpoints.c.job_id == jid)
+                .order_by(job_checkpoints.c.seq)).all()
+    except Exception as exc:
+        log.warning("Loading review checkpoint failed: %s", type(exc).__name__)
+        raise
+    out = []
+    for (body,) in rows:
+        loaded = json.loads(body or "[]")
+        if isinstance(loaded, list):
+            out.extend(loaded)
+    return out
+
+
+def append_batch(jid: str, kind: str, records: list[dict]) -> None:
+    """Insert one completed batch only if this worker still owns the lease.
+
+    The job row is locked first, then the next sequence number is taken. A unique
+    (job, seq) constraint retries the rare case where two batches still collide.
+    """
+    if not records:
+        return
+    if not _use_db():
+        raise LeaseLost("No database for the review checkpoint.")
+    body = json.dumps(records, default=_json_default)
+    for _attempt in range(6):
+        try:
+            with _eng().begin() as conn:
+                owned = conn.execute(
+                    update(jobs_table)
+                    .where(jobs_table.c.id == jid, jobs_table.c.resume_token == _worker_id,
+                           jobs_table.c.state == "running")
+                    .values(updated=_utc(), lease_until=_lease_deadline()))
+                if owned.rowcount != 1:
+                    raise LeaseLost("Lost the job lease before the batch could be saved.")
+                seq = conn.execute(
+                    select(func.max(job_checkpoints.c.seq)).where(job_checkpoints.c.job_id == jid)).scalar()
+                conn.execute(job_checkpoints.insert().values(
+                    job_id=jid, seq=int(seq or 0) + 1, kind=kind[:16], body=body))
+            return
+        except IntegrityError:
+            continue
+    raise LeaseLost("Could not store the review batch.")
+
+
+def _json_default(value):
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return str(value)
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _spawn(jid: str, work: Callable) -> None:
+    def run():
+        _tls.jid = jid
+        stop = threading.Event()
+        threading.Thread(target=_heartbeat_loop, args=(jid, stop), name=f"lease-{jid[:6]}",
+                         daemon=True).start()
+        try:
+            result = work(_progress(jid)) or {}
             payload = result.pop("payload", None)
             if payload is not None:
                 JOB_DIR.mkdir(parents=True, exist_ok=True)
                 (JOB_DIR / f"{jid}.bin").write_bytes(payload)
                 result["has_download"] = True
-                result["_payload_bytes"] = payload
             with _lock:
-                if payload is not None:
-                    _jobs[jid]["payload"] = payload
-                _jobs[jid].update(state="done", updated=time.time(), _ts=time.time(), **{k: v for k, v in result.items() if k != "_payload_bytes"})
-                snap = dict(_jobs[jid])
-            _update_db(jid, {k: v for k, v in snap.items() if k != "payload"}, payload=result.get("_payload_bytes"))
+                if jid not in _jobs:
+                    return
+                _jobs[jid].update(state="done", updated=time.time(), _ts=time.time(),
+                                  **{k: v for k, v in result.items() if k != "payload"})
+                snap = {k: v for k, v in _jobs[jid].items() if k != "payload"}
+            # Inputs stay until this fenced write says the dashboard save finished.
+            _update_db(jid, snap, payload=payload, release_inputs=True)
+            del payload
         except Exception as exc:
-            msg = str(exc) if isinstance(exc, ValueError) else "Could not process the upload."
-            if not isinstance(exc, ValueError):
-                log.warning("%s job failed: %s", kind, type(exc).__name__)
+            save_failed = type(exc).__name__ == "SaveFailed"
+            if save_failed or isinstance(exc, ValueError):
+                msg = str(exc)[:400]
+            else:
+                msg = "Could not process the upload."
+                log.warning("job failed: %s", type(exc).__name__)
+            stage = SAVE_FAILED_STAGE if save_failed else "Interrupted"
             with _lock:
-                _jobs[jid].update(state="error", error=msg[:400], updated=time.time(), _ts=time.time())
-                snap = dict(_jobs[jid])
-            _update_db(jid, snap)
+                if jid in _jobs:
+                    _jobs[jid].update(state="error", error=msg, stage=stage,
+                                      updated=time.time(), _ts=time.time())
+                    snap = dict(_jobs[jid])
+                else:
+                    snap = {"state": "error", "error": msg, "stage": stage}
+            # Keep the stored file and review batches. A save failure is resumed later.
+            _update_db(jid, snap, release_inputs=False)
         finally:
+            stop.set()
             with _lock:
-                j = _jobs[jid]
-                log.info("%s job finished in %.1fs (%s)", kind, time.time() - j["started"], j["state"])
+                j = _jobs.get(jid) or {}
+                log.info("job finished in %.1fs (%s)", time.time() - j.get("started", time.time()), j.get("state"))
 
-    threading.Thread(target=run, name=f"job-{kind}", daemon=True).start()
+    threading.Thread(target=run, name=f"job-{jid[:8]}", daemon=True).start()
+
+
+def _progress(jid: str) -> Callable:
+    def progress(stage: str, done: int = 0, total: int = 0, **extra) -> None:
+        checkpoint = json.dumps({"stage": stage, "done": int(done), "total": int(total)})
+        with _lock:
+            if jid not in _jobs:
+                return
+            _jobs[jid].update(stage=stage, done=int(done), total=int(total), updated=time.time(),
+                              _ts=time.time(), checkpoint=checkpoint, **extra)
+            snap = {k: v for k, v in _jobs[jid].items() if k != "payload"}
+        _update_db(jid, snap)
+    return progress
+
+
+def start(kind: str, work: Callable[[Callable], dict], *, filenames: str = "", rows: int = 0,
+          inputs: list[tuple[str, bytes]] | None = None) -> str:
+    jid = secrets.token_urlsafe(16)
+    now = time.time()
+    seed = {"kind": kind, "state": "running", "stage": "File accepted", "done": 0, "total": 0,
+            "message": "", "error": "", "filenames": filenames, "rows": rows,
+            "started": now, "updated": now, "_ts": now, "resume_token": _worker_id,
+            "checkpoint": json.dumps({"stage": "File accepted", "done": 0, "total": rows})}
+    with _lock:
+        _prune(now)
+        _jobs[jid] = {**seed, "id": jid}
+    _write_db(jid, seed)
+    if inputs is not None:
+        try:
+            _store_inputs(jid, inputs)
+        except InputNotStored:
+            mark_interrupted(jid, "Could not store the upload, so it was not started.")
+            with _lock:
+                _jobs.pop(jid, None)
+            raise
+    _spawn(jid, work)
     return jid
+
+
+def _claim(jid: str, seen_token, *, save_failed: bool = False) -> bool:
+    """Take a job whose lease has expired, or a finished save-failed job.
+
+    The lease check is done in Python. SQLite stores datetimes as text, and a
+    SQL comparison of those strings is not a time comparison. A save-failed job
+    has already stopped heartbeating, so it can be claimed without waiting out
+    the leftover lease. The token compare-and-swap still fences the old worker.
+    """
+    try:
+        now = _utc()
+        token_cond = jobs_table.c.resume_token.is_(None) if seen_token is None else (
+            jobs_table.c.resume_token == seen_token)
+        with _eng().begin() as conn:
+            row = conn.execute(
+                select(jobs_table.c.state, jobs_table.c.resume_token, jobs_table.c.lease_until,
+                       jobs_table.c.stage)
+                .where(jobs_table.c.id == jid)).first()
+            if not row:
+                return False
+            if (row[1] or None) != (seen_token or None):
+                return False
+            if save_failed:
+                if row[0] != "error" or row[3] != SAVE_FAILED_STAGE:
+                    return False
+            else:
+                if row[0] != "running":
+                    return False
+                lease_dt = _as_dt(row[2])
+                if lease_dt is not None and lease_dt > now:
+                    return False
+            state_cond = (jobs_table.c.state == "error") if save_failed else (
+                jobs_table.c.state == "running")
+            res = conn.execute(
+                update(jobs_table)
+                .where(jobs_table.c.id == jid, state_cond, token_cond)
+                .values(resume_token=_worker_id, updated=now, lease_until=_lease_deadline(),
+                        state="running", error="", stage="Resuming after a restart"))
+            return res.rowcount == 1
+    except Exception as exc:
+        log.warning("Job claim failed: %s", type(exc).__name__)
+        return False
+
+
+def resume_pending(factory: Callable | None = None) -> dict:
+    """Continue running jobs whose upload bytes were stored. Others are marked interrupted.
+
+    Jobs this process already has in memory are left alone. Returns counts; does not
+    delete stored posts.
+    """
+    factory = factory or _resume_factory
+    resumed = interrupted = 0
+    if not _use_db():
+        return {"resumed": 0, "interrupted": 0}
+    try:
+        recoverable = or_(
+            jobs_table.c.state == "running",
+            (jobs_table.c.state == "error") & (jobs_table.c.stage == SAVE_FAILED_STAGE),
+        )
+        with _eng().connect() as conn:
+            rows = conn.execute(
+                select(jobs_table.c.id, jobs_table.c.resume_token, jobs_table.c.lease_until,
+                       jobs_table.c.state, jobs_table.c.stage)
+                .where(recoverable)).all()
+    except Exception as exc:
+        log.warning("resume_pending failed: %s", type(exc).__name__)
+        try:
+            ensure_schema(_eng(), metadata)
+            with _eng().connect() as conn:
+                rows = conn.execute(
+                    select(jobs_table.c.id, jobs_table.c.resume_token, jobs_table.c.lease_until,
+                           jobs_table.c.state, jobs_table.c.stage)
+                    .where(or_(
+                        jobs_table.c.state == "running",
+                        (jobs_table.c.state == "error") & (jobs_table.c.stage == SAVE_FAILED_STAGE),
+                    ))).all()
+        except Exception as exc2:
+            log.warning("resume_pending retry failed: %s", type(exc2).__name__)
+            return {"resumed": 0, "interrupted": 0}
+    now = _utc()
+    for jid, token, lease, state, stage in rows:
+        save_failed = state == "error" and stage == SAVE_FAILED_STAGE
+        with _lock:
+            if jid in _jobs and _jobs[jid].get("state") == "running":
+                continue
+        if not save_failed:
+            lease_dt = _as_dt(lease)
+            # A live worker, including one from an overlapping deploy, still holds the lease.
+            if lease_dt is not None and lease_dt > now and token != _worker_id:
+                continue
+            if token == _worker_id:
+                continue
+        if not _claim(jid, token, save_failed=save_failed):
+            continue
+        files = _load_inputs(jid)
+        if not files or factory is None:
+            mark_interrupted(jid, "Interrupted before the file was stored. Please upload again.")
+            interrupted += 1
+            continue
+        now = time.time()
+        with _lock:
+            _jobs[jid] = {"id": jid, "kind": "screen", "state": "running",
+                          "stage": "Resuming after a restart", "done": 0, "total": 0,
+                          "message": "", "error": "", "filenames": ", ".join(n for n, _ in files)[:300],
+                          "rows": 0, "started": now, "updated": now, "_ts": now,
+                          "resume_token": _worker_id}
+        _spawn(jid, factory(files))
+        resumed += 1
+        log.info("Resumed upload job %s after restart (%d file(s))", jid, len(files))
+    return {"resumed": resumed, "interrupted": interrupted}
 
 
 def get(jid: str) -> dict | None:
     with _lock:
         j = _jobs.get(jid)
         if j:
-            return dict(j)
+            return {k: v for k, v in j.items() if k != "payload"}
     if not _use_db():
         return None
     try:
         with _eng().connect() as conn:
-            row = conn.execute(select(jobs_table).where(jobs_table.c.id == jid)).mappings().first()
-        if not row:
-            return None
-        out = dict(row)
-        out["has_download"] = bool(out.get("has_download"))
-        out["started"] = out["started"].timestamp() if hasattr(out["started"], "timestamp") else time.time()
-        out["updated"] = out["updated"].timestamp() if hasattr(out["updated"], "timestamp") else time.time()
-        return out
+            row = conn.execute(_status_select().where(jobs_table.c.id == jid)).mappings().first()
+        return _row_to_public_dict(row) if row else None
     except Exception as exc:
         log.warning("Job status read failed: %s", type(exc).__name__)
-        return None
+        try:
+            ensure_schema(_eng(), metadata)
+            with _eng().connect() as conn:
+                row = conn.execute(_status_select().where(jobs_table.c.id == jid)).mappings().first()
+            return _row_to_public_dict(row) if row else None
+        except Exception as exc2:
+            log.warning("Job status read retry failed: %s", type(exc2).__name__)
+            return None
 
 
 def payload(jid: str) -> bytes | None:
-    with _lock:
-        j = _jobs.get(jid)
-        if j and "payload" in j:
-            return j["payload"]
     p = JOB_DIR / f"{jid}.bin"
     if p.exists():
         return p.read_bytes()
     if _use_db():
         try:
             with _eng().connect() as conn:
-                row = conn.execute(select(jobs_table.c.payload, jobs_table.c.has_download)
-                                   .where(jobs_table.c.id == jid)).first()
+                row = conn.execute(select(jobs_table.c.payload).where(jobs_table.c.id == jid)).first()
             if row and row[0]:
                 return bytes(row[0])
         except Exception as exc:
             log.warning("Job payload read failed: %s", type(exc).__name__)
+            try:
+                ensure_schema(_eng(), metadata)
+                with _eng().connect() as conn:
+                    row = conn.execute(select(jobs_table.c.payload).where(jobs_table.c.id == jid)).first()
+                if row and row[0]:
+                    return bytes(row[0])
+            except Exception as exc2:
+                log.warning("Job payload read retry failed: %s", type(exc2).__name__)
     return None
 
 
 def list_recent_downloads(limit: int = 10) -> list[dict]:
-    """Finished screen jobs that still have an Excel file on disk (or marked has_download)."""
+    """Finished screen jobs that still have an Excel file stored."""
     out = []
     if _use_db():
         try:
             with _eng().connect() as conn:
                 rows = conn.execute(
-                    select(jobs_table).where(jobs_table.c.kind == "screen", jobs_table.c.state == "done",
-                                             jobs_table.c.has_download == 1)
+                    select(jobs_table.c.id, jobs_table.c.filenames, jobs_table.c.message,
+                           jobs_table.c.rows, jobs_table.c.updated)
+                    .where(jobs_table.c.kind == "screen", jobs_table.c.state == "done",
+                           jobs_table.c.has_download == 1)
                     .order_by(jobs_table.c.updated.desc()).limit(limit)).mappings().all()
             for row in rows:
-                jid = row["id"]
-                # Prefer jobs that still have bytes on disk, in memory, or in Postgres.
-                if not (JOB_DIR / f"{jid}.bin").exists() and not _jobs.get(jid, {}).get("payload") and not row.get("has_download"):
-                    continue
-                out.append({"id": jid, "filenames": row["filenames"], "message": row["message"],
-                            "rows": row["rows"], "updated": row["updated"].isoformat() if row["updated"] else ""})
+                out.append({"id": row["id"], "filenames": row["filenames"], "message": row["message"],
+                            "rows": row["rows"],
+                            "updated": row["updated"].isoformat() if row["updated"] else ""})
         except Exception as exc:
             log.warning("list_recent_downloads failed: %s", type(exc).__name__)
     return out
@@ -271,43 +693,32 @@ def list_running() -> list[dict]:
     with _lock:
         for jid, j in _jobs.items():
             if j.get("state") == "running":
-                out.append({**j, "id": jid})
+                out.append({k: v for k, v in j.items() if k != "payload"} | {"id": jid})
     if _use_db():
         try:
             with _eng().connect() as conn:
-                rows = conn.execute(select(jobs_table).where(jobs_table.c.state == "running")).mappings().all()
+                rows = conn.execute(_status_select().where(jobs_table.c.state == "running")).mappings().all()
             for row in rows:
                 if not any(o.get("id") == row["id"] for o in out):
-                    d = dict(row)
-                    d["has_download"] = bool(d.get("has_download"))
-                    out.append(d)
+                    out.append(_row_to_public_dict(row))
         except Exception as exc:
             log.warning("list_running failed: %s", type(exc).__name__)
     return out
 
 
-def mark_interrupted(jid: str, reason: str = "Interrupted by a deploy. Please upload again.") -> None:
+def mark_interrupted(jid: str, reason: str = "Interrupted before the file was stored. Please upload again.") -> None:
     with _lock:
         if jid in _jobs:
             _jobs[jid].update(state="error", error=reason, updated=time.time(), _ts=time.time())
-    _update_db(jid, {"state": "error", "error": reason})
+    _update_db(jid, {"state": "error", "error": reason, "stage": "Interrupted"})
 
 
 def reclaim_orphans_on_boot() -> int:
-    """Running rows left from a prior process cannot continue; mark them so the UI stops spinning."""
-    n = 0
-    if not _use_db():
-        return 0
-    try:
-        with _eng().connect() as conn:
-            rows = conn.execute(select(jobs_table.c.id).where(jobs_table.c.state == "running")).all()
-        for (jid,) in rows:
-            mark_interrupted(jid)
-            n += 1
-        if n:
-            log.warning("Marked %d orphaned upload job(s) interrupted after restart", n)
-    except Exception as exc:
-        log.warning("reclaim_orphans_on_boot failed: %s", type(exc).__name__)
+    """Resume stored running jobs. Jobs with no stored file are marked interrupted."""
+    stats = resume_pending()
+    n = stats["resumed"] + stats["interrupted"]
+    if n:
+        log.info("Restart recovery: resumed %d, interrupted %d", stats["resumed"], stats["interrupted"])
     return n
 
 
@@ -323,5 +734,5 @@ def public(j: dict, jid: str | None = None) -> dict:
         updated = time.time()
     out["elapsed"] = round((updated if j.get("state") != "running" else time.time()) - started, 1)
     jid = jid or j.get("id") or ""
-    out["has_download"] = bool(j.get("has_download") or "payload" in j or (jid and (JOB_DIR / f"{jid}.bin").exists()))
+    out["has_download"] = bool(j.get("has_download") or (jid and (JOB_DIR / f"{jid}.bin").exists()))
     return out

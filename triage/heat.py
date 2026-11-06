@@ -90,17 +90,29 @@ def analyze_heat(df: pd.DataFrame, text_cols: list, complete=None, max_posts: in
 
     def _run(job):
         start, n, body = job
+        parsed: dict[int, dict] = {}
+        records = None
         try:
-            return complete(heat_prompt(), body)
+            reply = complete(heat_prompt(), body)
+            refine._absorb(parsed, reply, _clean)
+            records = []
+            for i, cleaned in parsed.items():
+                rec = out.loc[i].to_dict()
+                rec.update({k: v for k, v in cleaned.items() if v is not None})
+                rec["heat_sampled"] = True
+                records.append(rec)
         except Exception as exc:
             log.warning("Heat batch at %d failed: %s", start, type(exc).__name__)
-            return None
-        finally:
-            if progress:
-                progress(n)
-    for reply in refine.run_concurrently(_run, jobs):
-        if reply is not None:
-            refine._absorb(results, reply, _clean)
+            records = None
+            parsed = {}
+        if records and progress:
+            progress(n, records)
+        elif progress:
+            progress(n)
+        return parsed
+    for parsed in refine.run_concurrently(_run, jobs):
+        if parsed:
+            results.update(parsed)
     sampled = set(sent)
     for col in HEAT_COLUMNS:
         out[col] = [results.get(i, {}).get(col) for i in out.index]

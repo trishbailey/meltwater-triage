@@ -267,19 +267,31 @@ def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None =
 
     def _run(job):
         start, n, body = job
+        parsed: dict[int, dict] = {}
+        records = None
         try:
             tip = _few_shot_block()
             system = SYSTEM_PROMPT + (("\n\nLabeled examples from the analyst:\n" + tip) if tip else "")
-            return complete(system, body)
-        except Exception as exc:  # keep keyword results if the review fails
+            reply = complete(system, body)
+            _absorb(parsed, reply, _clean)
+            records = []
+            for i, cleaned in parsed.items():
+                rec = out.loc[i].to_dict()
+                rec.update({k: v for k, v in cleaned.items() if v is not None})
+                records.append(rec)
+        except Exception as exc:  # keep keyword results if the review call fails
             log.warning("Refinement batch at row %d failed: %s", start, type(exc).__name__)
-            return None
-        finally:
-            if progress:
-                progress(n)
-    for reply in run_concurrently(_run, jobs):
-        if reply is not None:
-            _absorb(results, reply, _clean)
+            records = None
+            parsed = {}
+        # Durably record a completed batch before telling the job it made progress.
+        if records and progress:
+            progress(n, records)
+        elif progress:
+            progress(n)
+        return parsed
+    for parsed in run_concurrently(_run, jobs):
+        if parsed:
+            results.update(parsed)
     for col in REFINE_COLUMNS:
         out[col] = [results.get(i, {}).get(col) for i in range(len(out))]
     return out

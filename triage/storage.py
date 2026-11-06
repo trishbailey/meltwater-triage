@@ -196,7 +196,8 @@ class Storage:
                 cursor = dbapi_conn.cursor()
                 cursor.execute("PRAGMA busy_timeout=5000")
                 cursor.close()
-        metadata.create_all(self.engine)
+        from .schema import ensure_schema
+        ensure_schema(self.engine, metadata)
 
     def save_run(self, rows: pd.DataFrame, filenames: list[str], rows_screened: int,
                  now: datetime | None = None) -> int:
@@ -215,6 +216,12 @@ class Storage:
                 doc = _doc_id(data)
                 dt = pd.to_datetime(_lc(data, "date"), errors="coerce")
                 has_dt = not pd.isna(dt)
+                from .origin import origin_label, publisher_label
+                origin = origin_label(data)
+                publisher = publisher_label(data)
+                data["origin_source"] = origin
+                if publisher:
+                    data["publisher"] = publisher
                 values = dict(
                     last_run_id=run_id,
                     post_date=dt.to_pydatetime() if has_dt else None,
@@ -225,7 +232,7 @@ class Storage:
                     refined_category=data.get("refined_category") or None,
                     severity=data.get("severity") or None, threat_type=data.get("threat_type") or None,
                     author_name=_lc(data, "author name"), author_handle=_lc(data, "author handle"),
-                    source_name=_lc(data, "source name"), link=data.get("link"),
+                    source_name=origin, link=data.get("link"),
                     engagement=_num(_lc(data, "engagement")), heat_score=_num(data.get("heat_score")),
                     heat_topic=data.get("heat_topic") or None, data=data)
                 old = conn.execute(select(posts).where(posts.c.document_id == doc)).mappings().first()
@@ -238,12 +245,67 @@ class Storage:
                             values[k] = old[k]
                     merged = dict(old["data"] or {})
                     merged.update({k: v for k, v in data.items() if v not in (None, "")})
+                    prev_source = (old["source_name"] or "").strip()
+                    if origin == "Unknown source" and prev_source and "meltwater" not in prev_source.lower():
+                        values["source_name"] = prev_source
+                        merged["origin_source"] = prev_source
                     values["data"] = merged
                     conn.execute(posts.update().where(posts.c.document_id == doc).values(**values))
                 else:
                     conn.execute(posts.insert().values(document_id=doc, first_run_id=run_id,
                                                        upload_week=week, upload_month=month, **values))
         return run_id
+
+    def merge_review(self, rec: dict) -> bool:
+        """Merge review fields into an existing post. Does not insert or delete."""
+        data_in = {str(k): _jsonable(v) for k, v in rec.items()}
+        doc = _doc_id(data_in)
+        with self.engine.begin() as conn:
+            old = conn.execute(select(posts).where(posts.c.document_id == doc)).mappings().first()
+            if not old:
+                return False
+            merged = dict(old["data"] or {})
+            merged.update({k: v for k, v in data_in.items() if v not in (None, "")})
+            values = {"data": merged, "last_run_id": old["last_run_id"]}
+            for key in ("refined_category", "severity", "threat_type", "category"):
+                if data_in.get(key) not in (None, ""):
+                    values[key] = data_in[key]
+            if _num(data_in.get("heat_score")) is not None:
+                values["heat_score"] = _num(data_in.get("heat_score"))
+            if data_in.get("heat_topic"):
+                values["heat_topic"] = data_in["heat_topic"]
+            conn.execute(posts.update().where(posts.c.document_id == doc).values(**values))
+        return True
+
+
+    def reuse_index(self, text_cols: list | None = None) -> "ReuseIndex":
+        """Load prior classifications for skipping Claude on re-uploads and retweets."""
+        from .reuse import ReuseIndex, _payload_from_stored, _url_key, text_fingerprint, _row_text
+        index = ReuseIndex()
+        text_cols = text_cols or []
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(
+                posts.c.document_id, posts.c.category, posts.c.refined_category,
+                posts.c.severity, posts.c.threat_type, posts.c.heat_score, posts.c.heat_topic,
+                posts.c.link, posts.c.data)).all()
+        for doc, cat, refined, sev, tt, heat, topic, link, data in rows:
+            payload = _payload_from_stored(doc, cat, refined, sev, tt, heat, topic, data)
+            blob = dict(data) if isinstance(data, dict) else {}
+            if link:
+                payload.setdefault("link", link)
+                blob.setdefault("link", link)
+                blob.setdefault("url", link)
+            payload["_url_key"] = _url_key({**blob, **payload})
+            merged = {**blob, **payload}
+            if text_cols:
+                fp = text_fingerprint(_row_text(merged, text_cols))
+            else:
+                fp = text_fingerprint(str(
+                    blob.get("Hit Sentence") or blob.get("hit sentence")
+                    or blob.get("Content") or blob.get("content") or ""))
+            payload["_fp"] = fp
+            index.add(payload)
+        return index
 
     def posts_sent_this_month(self, now: datetime | None = None) -> int:
         month = _utc(now).strftime("%Y-%m")

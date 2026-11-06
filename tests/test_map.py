@@ -50,10 +50,17 @@ def client(tmp_path, monkeypatch):
 
 def test_dashboard_includes_map(client):
     html = client.get("/dashboard").get_data(as_text=True)
-    assert 'id="dash-map"' in html and "World_Dark_Gray_Base" in html
+    assert 'id="dash-map"' in html
+    assert "Natural Earth" in html and "tile.openstreetmap.org" in html
     assert "leaflet" in html.lower() and "OpenStreetMap" in html
+    assert 'data-layer="threats"' in html and 'data-layer="past"' in html
+    assert 'data-layer="planned"' in html and 'data-layer="advocacy"' in html
+    assert html.count('aria-pressed="true"') >= 4
     data = client.get("/api/map?days=30").get_json()
     assert len(data["assets"]) == 16 and "threats" in data
+    icons = {a["icon"] for a in data["assets"]}
+    assert icons == {"anchor", "plane", "building", "shield"}
+    assert all(a.get("always") and a.get("short") for a in data["assets"])
 
 
 def test_web_source_color_distinct():
@@ -66,8 +73,21 @@ def test_web_source_color_distinct():
         assert coloraide.Color(web).delta_e(o, method="2000") >= 20, o
 
 
-def test_esri_tiles_in_dashboard(client):
+def test_basemap_and_phone_layout(client):
     html = client.get("/dashboard").get_data(as_text=True)
-    assert "World_Dark_Gray_Base" in html
+    assert "tile.openstreetmap.org" in html
+    assert "getZoom()>=7" in html or "getZoom() >= 7" in html
     assert "basemaps.cartocdn.com" not in html
-    assert "Esri" in html
+    assert "World_Dark_Gray_Base" not in html
+    assert "API KEY REQUIRED" not in html
+    assert "@media (max-width:390px)" in html
+    assert "map-labels.js" in html and "zoomend moveend" in html
+    assert "paddingTopLeft" in html and "maxZoom: narrow ? 4 : 5" in html
+    assert ".dash-map{height:520px}" in html
+    assert "map-label{font-size:13px}" in html
+    assert "map-label{font-size:11px}" not in html
+    assert "map-label{font-size:10px}" not in html
+    assert "bindTooltip" not in html
+    assert "post-row" in html
+    assert "google-analytics" not in html and "Trish" not in html
+    assert "Meltwater" not in html.split('id="map-legend"')[-1].split("</section>")[0]
