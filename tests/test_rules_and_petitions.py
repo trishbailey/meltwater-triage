@@ -65,3 +65,10 @@ def test_commentary_and_report_sharing_are_not_protests():
     for t in (commentary, report):
         assert f.screen_text(t, p)["category"] in ("", "threat")
     assert f.screen_text("Blockade the shipyard at Henderson on 14 November", p)["category"] == "protest"
+
+
+def test_inquiry_report_summary_is_not_a_protest():
+    from triage import filters as f
+    t = ("AUKUS ENQUIRY REPORT RELEASED TODAY The independent public inquiry into AUKUS was created by the "
+         "organizers and the Australian Peace and Security Forum, gathering public evidence and publishing findings.")
+    assert f.screen_text(t, f.Patterns())["category"] == ""
