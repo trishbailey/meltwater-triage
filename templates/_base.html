@@ -156,6 +156,7 @@ function mark(btn){
     wrap.querySelectorAll(".rel-btns .btn").forEach(function(b){b.setAttribute("aria-pressed", b.dataset.label===label?"true":"false");});
     wrap.classList.toggle("item-hidden", label==="not_relevant");
     applyHide();
+    document.dispatchEvent(new CustomEvent("labels-saved"));
     if(label==="not_relevant"){var t=wrap.querySelector(".ptext");
       openReason([{item_type:wrap.dataset.itemType,item_id:wrap.dataset.itemId}], t?t.textContent.trim().slice(0,160):"");}
   }).catch(function(){alert("Could not save label");});
@@ -192,6 +193,7 @@ function markGroup(btn){
       r.classList.toggle("item-hidden",label==="not_relevant");
     });
     applyHide();
+    document.dispatchEvent(new CustomEvent("labels-saved"));
     if(label==="not_relevant"){openReason(items,items.length+" similar posts");}
   }).catch(function(){alert("Could not save labels");});
 }

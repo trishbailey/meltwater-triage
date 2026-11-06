@@ -136,3 +136,11 @@ def test_protest_section_targets_exclude_generic_names():
     ctx = dashboard.build(df, labels={("post", "p1"): "relevant"})
     labels = [t["label"] for t in ctx["protests"]["targets"]]
     assert labels == ["Henderson shipyard (WA)"]
+
+
+def test_map_reloads_when_a_label_is_saved():
+    import os
+    root = os.path.join(os.path.dirname(__file__), "..", "templates")
+    base = open(os.path.join(root, "_base.html")).read()
+    dash = open(os.path.join(root, "dashboard.html")).read()
+    assert base.count('"labels-saved"') == 2 and 'addEventListener("labels-saved"' in dash
