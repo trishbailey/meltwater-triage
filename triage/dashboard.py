@@ -13,7 +13,7 @@ from .grouping import group_indices
 from .export import (PROTEST_CATS, THREAT_CATS, author_handle, is_rejected, post_text)
 from .origin import origin_label
 from .taxonomy import canon_targets, canon_topic
-from .unified import WINDOW_DAYS
+from . import unified
 
 COLORS = {"threat": "#c92f24", "protest": "#c8a24a"}
 SOURCE_COLORS = {"x": "#5aa9ff", "bluesky": "#2fd6b5", "facebook": "#b48cff",
@@ -185,10 +185,10 @@ def _section(rows: list[dict], kind: str) -> dict:
 def build(raw: pd.DataFrame | None, labels: dict | None = None, storage_ready: bool = True) -> dict:
     from . import geo
     labels = labels or {}
-    ctx: dict = {"colors": COLORS, "window_days": WINDOW_DAYS, "storage_ready": storage_ready,
+    ctx: dict = {"colors": COLORS, "window_label": "since " + unified.start().strftime("%B %-d"), "storage_ready": storage_ready,
                  "relevance_labels": {f"{t}:{i}": lab for (t, i), lab in labels.items()},
                  "land": geo.australia_land(),
-                 "map": {"assets": geo.asset_markers(), "days": WINDOW_DAYS,
+                 "map": {"assets": geo.asset_markers(), "days": None,
                          "legend": [
                              {"label": "Sites", "color": geo.ASSET_COLOR, "swatch": "site"},
                              {"label": "Threats", "color": geo.THREAT_MAP_COLOR, "swatch": "fill"},

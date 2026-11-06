@@ -102,7 +102,7 @@ uploads and alert deletion reject cross-site Origin headers. For local http test
 
 - `POST /alerts/<id>/delete` (signed in): deletes one alert; the dashboard has a Delete button on each alert.
 - `/status` (password): stored rows by post month and flag type, upload runs, alert count, and posts sent for review this month against the monthly cap.
-- `/dashboard` (password): three parts. (1) A map of the last 30 days with Threats and Protests toggles only. (2) Threats and (3) Protests, each with topic analysis, top targets, top authors (with their posts) and a Flagged posts dropdown showing platform, handle, date, text and Relevant / Not relevant buttons. Meltwater posts, Seerist PDF items and alerts share one dataset and the same pre-sort. Each section has a download button (`/download/threats.xlsx`, `/download/protests.xlsx`, `?days=` 1-365) with the original columns plus the AI review.
+- `/dashboard` (password): three parts. (1) A map of posts since November 1 (`DASHBOARD_START_DATE`) with Threats and Protests toggles only. (2) Threats and (3) Protests, each with topic analysis, top targets, top authors (with their posts) and a Flagged posts dropdown showing platform, handle, date, text and Relevant / Not relevant buttons. Meltwater posts, Seerist PDF items and alerts share one dataset and the same pre-sort. Each section has a download button (`/download/threats.xlsx`, `/download/protests.xlsx`, `?days=` 1-365) with the original columns plus the AI review.
 - `POST /api/alerts` with `Authorization: Bearer $ALERT_INGEST_TOKEN` and a JSON body:
   `source` (x, bluesky, facebook, instagram, newsletter), `url`, `author`, `text`, `posted_at` (ISO 8601),
   `matched_terms` (list or `;`-separated), `signal_level` (critical, high, medium, low).

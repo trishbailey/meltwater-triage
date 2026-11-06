@@ -226,3 +226,12 @@ def test_advocacy_status_no_longer_flags_protest():
     from triage import filters
     assert "Advocacy: inquiry/submission campaign" not in filters.PROTEST_FLAG_STATUSES
     assert "Past event recap: review separately" not in filters.PROTEST_FLAG_STATUSES
+
+
+def test_window_starts_nov_1():
+    from datetime import datetime, timezone
+    from triage import unified
+    assert unified.cutoff() == datetime(2026, 11, 1, tzinfo=timezone.utc)
+    far = datetime(2027, 3, 1, tzinfo=timezone.utc)
+    assert unified.cutoff(None, now=far) == datetime(2026, 11, 1, tzinfo=timezone.utc)
+    assert unified.cutoff(7, now=far) == datetime(2027, 2, 22, tzinfo=timezone.utc)
