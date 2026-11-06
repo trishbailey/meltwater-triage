@@ -12,7 +12,7 @@ from .filters import DROPPED_PROTEST_STATUSES, is_petition_only
 from .grouping import group_indices
 from .export import (PROTEST_CATS, THREAT_CATS, author_handle, is_rejected, post_text)
 from .origin import origin_label
-from .taxonomy import canon_targets, canon_topic, site_targets, sites_from_text, targets_from_text
+from .taxonomy import threat_targets, canon_targets, canon_topic, site_targets, sites_from_text, targets_from_text
 from . import unified
 
 COLORS = {"threat": "#c92f24", "protest": "#c8a24a"}
@@ -93,7 +93,7 @@ def _view(df: pd.DataFrame, labels: dict, reasons: dict | None = None, auto: dic
             "eng": _num(rec.get("Engagement") if "Engagement" in rec else rec.get("engagement")),
             "category": _s(rec.get("category")),
             "threat_type": _s(rec.get("threat_type")), "theme": _s(rec.get("theme")),
-            "targets": _s(rec.get("targets")), "protest_topic": _s(rec.get("protest_topic")),
+            "targets": _s(rec.get("targets")), "named": _s(rec.get("named_individuals")), "protest_topic": _s(rec.get("protest_topic")),
             "summary": _s(rec.get("narrative_summary")), "reviewed": reviewed,
             "label": labels.get((kind, item_id), ""),
             "auto": (auto or {}).get((kind, item_id), ""),
@@ -103,11 +103,11 @@ def _view(df: pd.DataFrame, labels: dict, reasons: dict | None = None, auto: dic
     return out
 
 
-def _target_counts(rows: list[dict], n: int = TOP_N, physical: bool = False) -> list[dict]:
+def _target_counts(rows: list[dict], n: int = TOP_N, physical: bool = False, kind: str = "protest") -> list[dict]:
     """Posts per grouped target. A post naming two variants of one target counts once."""
     counts: dict[str, list] = {}
     for r in rows:
-        for label in _targets(r, physical):
+        for label in _targets(r, physical, kind):
             rec = counts.setdefault(label.lower(), [label, 0])
             rec[1] += 1
     items = sorted(counts.values(), key=lambda x: (-x[1], x[0]))[:n]
@@ -140,7 +140,9 @@ def _topic_label(r: dict, kind: str) -> str:
     return canon_topic(r["protest_topic"]) or canon_topic(r["text"]) or PENDING
 
 
-def _targets(r: dict, physical: bool = False) -> list[str]:
+def _targets(r: dict, physical: bool = False, kind: str = "protest") -> list[str]:
+    if kind == "threat":  # threat targets are named people or specific places and assets
+        return threat_targets(r["targets"], r["named"]) or sites_from_text(r["text"])
     if physical:  # targets are specific places or assets, never "AUKUS", "Australia" or "the government"
         return site_targets(r["targets"]) or sites_from_text(r["text"])
     return canon_targets(r["targets"]) if r["targets"] else targets_from_text(r["text"])
@@ -151,7 +153,7 @@ def _post_card(r: dict, kind: str) -> dict:
                               "label", "summary", "reviewed", "reason", "note", "auto")}
     # Used by the page to rebuild the analysis as the analyst marks posts.
     card["topic"] = _topic_label(r, kind)
-    card["target_list"] = _targets(r, True)
+    card["target_list"] = _targets(r, True, kind)
     return card
 
 
@@ -190,7 +192,7 @@ def _section(rows: list[dict], kind: str) -> dict:
         "kind": kind, "count": len(rows),
         "reviewed": len(reviewed), "pending": len(pending),
         "topics": _topics(kept, kind),
-        "targets": _target_counts(kept, physical=True),
+        "targets": _target_counts(kept, physical=True, kind=kind),
         "groups": shown_rev, "pending_groups": shown_pen,
         "todo_groups": todo, "done_groups": done,
         "todo_posts": sum(g["n"] for g in todo), "done_posts": sum(g["n"] for g in done),

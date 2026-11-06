@@ -142,3 +142,26 @@ def sites_from_text(text: str) -> list[str]:
     """Sites named in the post text (used until Claude's analysis exists)."""
     low = (text or "").lower()
     return [label for label, pattern in _SITE_RULES if re.search(pattern, low)]
+
+
+_PERSON = re.compile(r"^(?:(?:Prime Minister|PM|Minister|Senator|Sen\.?|Dr|Mr|Mrs|Ms|President|Premier|Hon\.?|Admiral|General) )?"
+                     r"[A-Z][a-z'\-]+(?: [A-Z][a-z'\-]+){1,3}$")
+_ORG_WORD = re.compile(r"\b(party|government|department|council|union|committee|agency|force|forces|navy|army|"
+                       r"company|corporation|systems|group|association|australia|america|states)\b", re.I)
+
+
+def threat_targets(raw: str, named: str = "") -> list[str]:
+    """Threat targets are named people or specific physical places and assets, never a general subject."""
+    seen: dict[str, str] = {}
+    for part in (raw or "").split(";"):
+        part = re.sub(r"\s+", " ", part.strip())
+        label = canon_site(part)
+        if not label and _PERSON.match(part) and not _ORG_WORD.search(part) and not _GENERIC_TARGET.match(part):
+            label = part
+        if label:
+            seen.setdefault(label.lower(), label)
+    for part in (named or "").split(";"):
+        part = re.sub(r"\s+", " ", part.strip())
+        if _PERSON.match(part) and not _ORG_WORD.search(part):
+            seen.setdefault(part.lower(), part)
+    return list(seen.values())

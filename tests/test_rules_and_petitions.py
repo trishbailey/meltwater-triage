@@ -178,3 +178,10 @@ def test_threat_targets_must_be_specific_sites():
 def test_no_topic_analysis_in_dashboard():
     from pathlib import Path
     assert "Topic analysis" not in Path("templates/dashboard.html").read_text()
+
+
+def test_threat_targets_are_people_or_places():
+    from triage.taxonomy import threat_targets
+    got = threat_targets("AUKUS; Australia; Anthony Albanese; HMAS Stirling; the Navy", "Richard Marles")
+    assert got == ["HMAS Stirling (Rockingham, WA)", "Anthony Albanese", "Richard Marles"] or set(got) == {
+        "HMAS Stirling (Rockingham, WA)", "Anthony Albanese", "Richard Marles"}
