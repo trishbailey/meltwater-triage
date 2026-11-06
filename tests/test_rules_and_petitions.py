@@ -144,3 +144,13 @@ def test_map_reloads_when_a_label_is_saved():
     base = open(os.path.join(root, "_base.html")).read()
     dash = open(os.path.join(root, "dashboard.html")).read()
     assert base.count('"labels-saved"') == 2 and 'addEventListener("labels-saved"' in dash
+
+
+def test_analysis_runs_automatically_in_the_background_loop(tmp_path, monkeypatch):
+    from triage import stages
+    from triage.storage import Storage
+    st = Storage(f"sqlite:///{tmp_path/'a.db'}")
+    calls = []
+    monkeypatch.setattr(stages, "analyze_relevant", lambda s, complete=None: calls.append(1) or 3)
+    out = stages._run_all(st, None, False, lambda s, complete=None: 0)
+    assert out["analyzed"] == 3 and calls == [1]

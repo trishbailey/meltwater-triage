@@ -338,6 +338,49 @@ def create_app() -> Flask:
         return {"deleted": deleted}
 
 
+    def _run_analysis(st):
+        state = app.extensions.setdefault("analyze", {"running": False, "last": None})
+        if state["running"]:
+            return False
+        from triage.stages import analyze_relevant
+
+        def work():
+            try:
+                state["last"] = {"at": datetime.now(timezone.utc).isoformat(), "analyzed": analyze_relevant(st)}
+            except Exception as exc:  # noqa: BLE001
+                app.logger.warning("Analysis failed: %s", type(exc).__name__)
+                state["last"] = {"at": datetime.now(timezone.utc).isoformat(), "error": type(exc).__name__}
+            finally:
+                state["running"] = False
+
+        state["running"] = True
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    _auto = {"timer": None}
+
+    def _auto_analyze_soon():
+        """Analyze Relevant posts about 40 seconds after the analyst's last label (restarts on each label)."""
+        if not _review_on() or app.config.get("TESTING"):
+            return
+        st = _storage()
+        if st is None:
+            return
+        if _auto["timer"] is not None:
+            _auto["timer"].cancel()
+
+        def fire():
+            if not _run_analysis(st):  # one is running: try again shortly
+                t = threading.Timer(20, fire)
+                t.daemon = True
+                _auto["timer"] = t
+                t.start()
+
+        t = threading.Timer(40, fire)
+        t.daemon = True
+        _auto["timer"] = t
+        t.start()
+
     @app.route("/api/analyze", methods=["GET", "POST"])
     def analyze_relevant_posts():
         """Run Claude's analysis on posts marked Relevant (started by the Analyze with Claude button)."""
@@ -385,6 +428,8 @@ def create_app() -> Flask:
             return {"error": str(exc)}, 400
         except RuntimeError as exc:
             return {"error": str(exc)}, 503
+        if body.get("label") == "relevant":
+            _auto_analyze_soon()
         return out
 
     @app.post("/api/relevance/batch")
@@ -402,6 +447,8 @@ def create_app() -> Flask:
             return {"error": str(exc)}, 400
         except RuntimeError as exc:
             return {"error": str(exc)}, 503
+        if body.get("label") == "relevant":
+            _auto_analyze_soon()
         return {"saved": n, "label": body.get("label")}
 
     @app.post("/api/relevance/reason")

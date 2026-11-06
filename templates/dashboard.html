@@ -152,6 +152,27 @@ document.addEventListener("click",function(e){
   var d=e.target.closest(".dl-btn");
   if(d&&d.getAttribute("aria-disabled")==="true"){e.preventDefault();return;}
 });
+var watchTimer=null, watchLast=null, watchTries=0;
+function watchAnalysis(){
+  clearTimeout(watchTimer); watchTries=0;
+  fetch("/api/analyze",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(j){
+    watchLast=j.last?j.last.at:null; (function tick(){
+      watchTimer=setTimeout(function(){
+        fetch("/api/analyze",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(k){
+          var at=k.last?k.last.at:null;
+          if(!k.running && at && at!==watchLast){
+            document.querySelectorAll(".analyze-status").forEach(function(el){el.textContent="Claude's analysis is ready. Reload the page to see updated topics and targets.";});
+            document.dispatchEvent(new CustomEvent("labels-saved")); return;
+          }
+          if(++watchTries<40) tick();
+        }).catch(function(){if(++watchTries<40) tick();});
+      },6000);
+    })();
+  }).catch(function(){});
+}
+document.addEventListener("labels-saved",function(){
+  if({{ 'true' if review_on else 'false' }}) watchAnalysis();
+});
 function pollAnalyze(){
   fetch("/api/analyze",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(j){
     document.querySelectorAll(".analyze-status").forEach(function(el){el.textContent=j.running?"Analyzing with Claude… this takes a minute.":(j.last&&j.last.error?"Analysis failed: "+j.last.error:"");});
