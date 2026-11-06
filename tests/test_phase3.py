@@ -150,14 +150,14 @@ def test_dashboard_renders_with_data(client):
     st.save_run(rows_to_store(df, df), ["s.xlsx"], 4)
     login(client)
     html = client.get("/dashboard", headers=auth()).get_data(as_text=True)
-    for s in ("Threats", "Protests", "targets", "AI-reviewed posts", "post-row",
+    for s in ("Threats", "Protests", "targets", "need human review and tagging", "post-row",
               "/download/threats.xlsx", "/download/protests.xlsx"):
         assert s in html
     assert "Top threat authors" not in html and "Top protest authors" not in html
     threats = html.split('id="threats"')[1].split("</section>")[0]
     assert threats.index("analyze-btn") < threats.index("/download/threats.xlsx")  # download comes last
     assert threats.index("/download/threats.xlsx") > threats.index("an-topics")
-    assert "sec-head" in threats and threats.index("dl-btn") > threats.index("flagged")
+    assert "sec-head" in threats and threats.index("dl-btn") > threats.index("done-box")
     for gone in ("Early warning", "Monthly trend", "Upcoming protests", "Trish", "google-analytics"):
         assert gone not in html
 

@@ -154,3 +154,15 @@ def test_analysis_runs_automatically_in_the_background_loop(tmp_path, monkeypatc
     monkeypatch.setattr(stages, "analyze_relevant", lambda s, complete=None: calls.append(1) or 3)
     out = stages._run_all(st, None, False, lambda s, complete=None: 0)
     assert out["analyzed"] == 3 and calls == [1]
+
+
+def test_unjudged_groups_come_before_relevant_ones():
+    import pandas as pd
+    from triage import dashboard
+    rows = [{"category": "protest", "document_id": f"p{i}", "Hit Sentence": t, "post_date": pd.Timestamp(d),
+             "refined_category": "protest", "is_genuine": True, "link": f"u{i}"}
+            for i, (t, d) in enumerate([("Rally at Henderson shipyard Saturday", "2026-11-05"),
+                                        ("March in Sydney against the base on Sunday", "2026-11-02")])]
+    ctx = dashboard.build(pd.DataFrame(rows), labels={("post", "p0"): "relevant"})
+    texts = [g["rep"]["text"] for g in ctx["protests"]["groups"]]
+    assert texts[0].startswith("March in Sydney")  # unjudged older post is above the newer Relevant one

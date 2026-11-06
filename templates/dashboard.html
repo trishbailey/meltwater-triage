@@ -48,9 +48,13 @@
 </div>
 {% if s.count %}
 <p class="note">{{ s.reviewed }} passed the AI filter and are ready for your review. Similar posts are grouped: mark a group once to label every post in it, or open it to mark posts one by one. The download contains only the posts marked Relevant, with the raw data and the AI analysis.</p>
-<details class="flagged" open><summary><strong>AI-reviewed posts</strong> ({{ s.reviewed }} post{{ "s" if s.reviewed != 1 }} in {{ s.groups_total }} group{{ "s" if s.groups_total != 1 }})</summary>
-<div class="body">{% for g in s.groups %}{{ group_card(g) }}{% endfor %}
-{% if not s.groups %}<p class="note">No AI-reviewed posts yet.</p>{% endif %}</div></details>
+<div class="todo-head"><strong>New posts: need human review and tagging</strong> <span class="note todo-count">{{ s.todo_posts }} post{{ "s" if s.todo_posts != 1 }} in {{ s.todo_groups|length }} group{{ "s" if s.todo_groups|length != 1 }}</span></div>
+<div class="body todo-list">{% for g in s.todo_groups %}{{ group_card(g) }}{% endfor %}</div>
+<p class="note todo-empty"{% if s.todo_groups %} hidden{% endif %}>Nothing waiting for human review. New posts appear here, at the top of this section.</p>
+<hr class="review-line">
+<details class="flagged done-box"><summary><strong>Already reviewed and tagged</strong> <span class="note done-count">{{ s.done_posts }} post{{ "s" if s.done_posts != 1 }} in {{ s.done_groups|length }} group{{ "s" if s.done_groups|length != 1 }}</span></summary>
+<p class="note">Change your mind at any time: use the buttons on a post to switch it between Relevant and Not relevant.</p>
+<div class="body done-list">{% for g in s.done_groups %}{{ group_card(g) }}{% endfor %}</div></details>
 {% if s.pending %}{% if review_on %}<p class="note">{{ s.pending }} more post{{ "s" if s.pending != 1 }} waiting for the AI filter. They appear here once it passes them.</p>
 {% else %}<details class="flagged"><summary><strong>Pre-sorted, AI filter is off</strong> ({{ s.pending }} post{{ "s" if s.pending != 1 }} in {{ s.pending_groups_total }} group{{ "s" if s.pending_groups_total != 1 }})</summary>
 <div class="body">{% for g in s.pending_groups %}{{ group_card(g) }}{% endfor %}</div></details>{% endif %}{% endif %}
@@ -152,6 +156,25 @@ document.addEventListener("click",function(e){
   var d=e.target.closest(".dl-btn");
   if(d&&d.getAttribute("aria-disabled")==="true"){e.preventDefault();return;}
 });
+function settle(){
+  var pop=document.getElementById("reason-pop"); if(pop&&!pop.hidden)return;  // wait until the reason is given
+  document.querySelectorAll("section.panel").forEach(function(sec){
+    var todo=sec.querySelector(".todo-list"), done=sec.querySelector(".done-list"); if(!todo||!done)return;
+    Array.prototype.slice.call(todo.children).forEach(function(u){
+      var rows=u.matches(".post-row")?[u]:Array.prototype.slice.call(u.querySelectorAll(".post-row"));
+      if(rows.length&&rows.every(function(r){return r.dataset.label;})) done.insertBefore(u,done.firstChild);
+    });
+    var units=Array.prototype.slice.call(todo.children), nrows=0;
+    units.forEach(function(u){nrows+=u.matches(".post-row")?1:u.querySelectorAll(".post-row").length;});
+    var dunits=Array.prototype.slice.call(done.children), drows=0;
+    dunits.forEach(function(u){drows+=u.matches(".post-row")?1:u.querySelectorAll(".post-row").length;});
+    var c=sec.querySelector(".todo-count"); if(c)c.textContent=nrows+" post"+(nrows===1?"":"s")+" in "+units.length+" group"+(units.length===1?"":"s");
+    var dc=sec.querySelector(".done-count"); if(dc)dc.textContent=drows+" post"+(drows===1?"":"s")+" in "+dunits.length+" group"+(dunits.length===1?"":"s");
+    var e=sec.querySelector(".todo-empty"); if(e)e.hidden=units.length>0;
+  });
+}
+document.addEventListener("labels-saved",function(){setTimeout(settle,600);});
+document.addEventListener("reason-closed",settle);
 var watchTimer=null, watchLast=null, watchTries=0;
 function watchAnalysis(){
   clearTimeout(watchTimer); watchTries=0;
