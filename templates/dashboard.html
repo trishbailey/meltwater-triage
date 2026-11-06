@@ -1,4 +1,14 @@
 {% extends "_base.html" %}{% block title %}Threat and Protest Monitor{% endblock %}{% block body %}
+{% macro reason_row(cur, note) %}
+<div class="reason-row nr" role="group" aria-label="Why not relevant">
+<span class="note">Why? (optional)</span>
+{% for code, name in not_relevant_reasons.items() %}<button type="button" class="chip" data-reason="{{ code }}" aria-pressed="{{ 'true' if cur==code else 'false' }}">{{ name }}</button>{% endfor %}
+<span class="other-note"{% if cur != 'other' %} hidden{% endif %}><input type="text" class="reason-note" maxlength="300" placeholder="Short note" value="{{ note }}"> <button type="button" class="btn save-note">Save note</button></span>
+</div>
+<div class="reason-row rl" role="group" aria-label="Relevance detail">
+{% for code, name in relevant_reasons.items() %}<button type="button" class="chip" data-reason="{{ code }}" aria-pressed="{{ 'true' if cur==code else 'false' }}">{{ name }}</button>{% endfor %}
+</div>
+{% endmacro %}
 {% macro post_row(post) %}
 {% set plabel = post.label %}
 <div class="post post-row {% if plabel=='not_relevant' %}item-hidden{% endif %}" data-item-type="{{ post.item_type }}" data-item-id="{{ post.item_id }}" data-source="{{ post.platform }}" data-label="{{ plabel }}" data-topic="{{ post.topic }}" data-targets="{{ post.target_list|join('|') }}" {% if plabel=='not_relevant' %}hidden{% endif %}>
@@ -13,7 +23,7 @@
 <div class="rel-btns" role="group" aria-label="Relevance">
 <button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if plabel=='relevant' else 'false' }}">Relevant</button>
 <button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if plabel=='not_relevant' else 'false' }}">Not relevant</button>
-</div></div>
+</div>{{ reason_row(post.reason, post.note) }}</div>
 {% endmacro %}
 {% macro group_card(g) %}
 {% if g.n == 1 %}{{ post_row(g.rep) }}{% else %}
@@ -30,6 +40,7 @@
 <button type="button" class="btn" data-group-label="relevant">All {{ g.n }} relevant</button>
 <button type="button" class="btn" data-group-label="not_relevant">All {{ g.n }} not relevant</button>
 </div></div>
+{{ reason_row(g.reason, "") }}
 <details class="group-members"><summary>Show the {{ g.n }} posts</summary>
 {% for post in g.members %}{{ post_row(post) }}{% endfor %}</details>
 </div>{% endif %}

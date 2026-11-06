@@ -23,6 +23,30 @@ labels = Table(
     UniqueConstraint("item_type", "item_id", name="uq_relevance_item"),
 )
 
+reasons = Table(
+    "label_reasons", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("item_type", String(16), nullable=False),
+    Column("item_id", String(255), nullable=False),
+    Column("reason", String(32), nullable=False),
+    Column("note", Text),
+    Column("saved_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("item_type", "item_id", name="uq_reason_item"),
+)
+
+# One click after a mark tells Claude why. Codes are stored; labels are shown.
+NOT_RELEVANT_REASONS = {
+    "advocacy": "Advocacy or petition",
+    "commentary": "Commentary or news",
+    "past_event": "Past event",
+    "off_topic": "Not about AUKUS",
+    "joke": "Joke or hyperbole",
+    "outside_australia": "Outside Australia",
+    "other": "Other",
+}
+RELEVANT_REASONS = {"wrong_section": "Relevant, but wrong section"}
+ALL_REASONS = {**NOT_RELEVANT_REASONS, **RELEVANT_REASONS}
+
 _engine = None
 
 
@@ -136,3 +160,48 @@ def noisy_terms(limit: int = 15) -> list[dict]:
                     "total": total, "precision": round(precision, 2)})
     out.sort(key=lambda r: (r["precision"], -r["not_relevant"]))
     return out[:limit]
+
+
+def set_reasons(items: list[dict], reason: str, note: str | None = None) -> int:
+    """Attach one reason (and an optional short note) to many items. An empty reason clears it."""
+    if reason and reason not in ALL_REASONS:
+        raise ValueError("unknown reason")
+    clean = []
+    for it in items[:500]:
+        t = str(it.get("item_type") or "")
+        if t not in ITEM_TYPES or not it.get("item_id"):
+            raise ValueError("each item needs item_type (post or alert) and item_id")
+        clean.append((t, str(it["item_id"])[:255]))
+    if not persistence_enabled():
+        raise RuntimeError("storage is not configured")
+    note = (note or "").strip()[:300] or None
+    now = _utc()
+    with _eng().begin() as conn:
+        for t, i in clean:
+            conn.execute(delete(reasons).where(reasons.c.item_type == t, reasons.c.item_id == i))
+            if reason:
+                conn.execute(reasons.insert().values(item_type=t, item_id=i, reason=reason, note=note, saved_at=now))
+    return len(clean)
+
+
+def all_reasons() -> dict[tuple[str, str], dict]:
+    if not persistence_enabled():
+        return {}
+    try:
+        with _eng().connect() as conn:
+            rows = conn.execute(select(reasons.c.item_type, reasons.c.item_id, reasons.c.reason,
+                                       reasons.c.note)).all()
+        return {(t, i): {"reason": r, "note": n or ""} for t, i, r, n in rows}
+    except Exception:
+        return {}
+
+
+def reason_counts(label: str = "not_relevant") -> dict[str, int]:
+    """How often each reason was given for items currently carrying `label`."""
+    labs = all_labels()
+    family = NOT_RELEVANT_REASONS if label == "not_relevant" else RELEVANT_REASONS
+    out: dict[str, int] = {}
+    for key, rec in all_reasons().items():
+        if labs.get(key) == label and rec["reason"] in family:
+            out[rec["reason"]] = out.get(rec["reason"], 0) + 1
+    return out
