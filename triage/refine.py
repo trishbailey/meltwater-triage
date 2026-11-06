@@ -69,8 +69,8 @@ _THREAT_FIELDS = (
     "\"id\": int, \"severity\": "
     "\"low\"|\"medium\"|\"high\"|\"critical\", \"threat_type\": one of \"violence\"|"
     "\"death threat\"|\"bombing or arson\"|\"sabotage\"|\"doxxing\"|\"harassment\"|"
-    "\"call to disruption\"|\"other\", \"targets\": [specific physical locations or assets the post "
-    "threatens, e.g. HMAS Stirling, Henderson shipyard, Pine Gap, a named vessel or office; never a general subject such as AUKUS, "
+    "\"call to disruption\"|\"other\", \"targets\": [specific people or physical places the post "
+    "threatens, e.g. a named politician, HMAS Stirling, Henderson shipyard, Pine Gap, a named vessel or office; never a general subject such as AUKUS, "
     "Australia, the government or the Navy; leave empty when none is named], \"named_individuals\": [named politicians and other named people], "
     "\"theme\": string (2-5 words), \"narrative_summary\": string (max 20 words)"
 )
