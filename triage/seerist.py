@@ -152,3 +152,42 @@ def to_alert(item: dict) -> dict:
             "text": text[:5000] or None, "posted_at": item.get("posted_at"),
             "matched_terms": "; ".join(terms),
             "signal_level": "medium" if sentiment == "negative" else "low"}
+
+
+def doc_id(item: dict) -> str:
+    """Stable id so the same Seerist item is never stored twice."""
+    from .alerts import normalize_url
+    key = normalize_url(item.get("url") or "")
+    if key:
+        return "seerist:" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+    return item_key(item) or ""
+
+
+def items_to_frame(items: list[dict], label: str):
+    """Seerist items in the column layout of a Meltwater export.
+
+    Seerist and Meltwater posts then go through the same pre-sort, review, storage and
+    dashboard. A Seerist item whose URL matches a stored Meltwater post merges into it.
+    """
+    import pandas as pd
+    rows = []
+    for it in items:
+        posted = it.get("posted_at")
+        rows.append({
+            "Document ID": doc_id(it),
+            "Date": posted.strftime("%Y-%m-%d %H:%M:%S") if posted else "",
+            "Title": it.get("title") or "",
+            "Hit Sentence": it.get("summary") or it.get("title") or "",
+            "URL": it.get("url") or "",
+            "Author Name": it.get("author") or "",
+            "Author Handle": "",
+            "Source Name": "",
+            "Engagement": 0,
+            "Location": it.get("location") or "",
+            "Sentiment": it.get("sentiment") or "",
+            "Topics": it.get("topics") or "",
+            "uploaded_file": label,
+            "worksheet": "",
+            "export_source": "Seerist",
+        })
+    return pd.DataFrame(rows)

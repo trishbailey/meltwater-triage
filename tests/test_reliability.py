@@ -258,20 +258,14 @@ def test_map_layers_and_grouping(monkeypatch):
          "mobilization_status": "Advocacy: inquiry/submission campaign",
          "narrative_summary": float("nan")},
     ])
-    mapped = build_map(posts, None, days=None)
-    kinds = {e["kind"] for e in mapped["events"]}
-    assert "planned" in kinds and "advocacy" in kinds
+    mapped = build_map(posts, days=None)
+    assert {e["kind"] for e in mapped["events"]} == {"protest"} and len(mapped["events"]) >= 2
     assert mapped["threats"] and mapped["threats"][0]["source"] != "Meltwater"
     assert all("meltwater" not in (e.get("source") or "").lower() for e in mapped["events"])
     assert all(e["source"] for e in mapped["events"])
-    ctx = dash.build(posts, None, month="2026-11")
-    assert "threat_type" in ctx["threat_chart"]["grouping"]
-    assert "stored" in ctx["threat_chart"]["grouping"].lower()
-    assert ctx["upcoming"] and ctx["upcoming"][0]["place"] == "Perth"
-    assert "meltwater" not in ctx["upcoming"][0]["source"].lower()
-    assert ctx["narrative"]
-    assert ctx["flagged_sample"]
-    assert "meltwater" not in ctx["flagged_sample"][0]["source"].lower()
+    ctx = dash.build(posts)
+    assert ctx["threats"]["count"] == 1 and ctx["protests"]["count"] == 2
+    assert all("meltwater" not in c["platform"].lower() for c in ctx["protests"]["posts"])
 
 
 def test_large_screen_drops_unneeded_rows_but_counts_them(monkeypatch, tmp_path):
@@ -430,10 +424,7 @@ def test_save_failed_job_resumes_without_paying_again(tmp_path, monkeypatch):
         time.sleep(0.05)
     assert jobs.get(jid)["state"] == "error"
     assert jobs.get(jid)["stage"] == jobs.SAVE_FAILED_STAGE
-    assert calls and first in calls[0]
-    paid = list(calls)
-    saved_ids = {row.get("document_id") for row in jobs.load_batches(jid)}
-    assert saved_ids >= {"P1", "P2"}
+    assert calls == []  # pre-sorted posts are saved before Claude is called; nothing was paid for
     calls.clear()
     stats = jobs.resume_pending(lambda files: work)
     assert stats["resumed"] == 1
@@ -442,10 +433,9 @@ def test_save_failed_job_resumes_without_paying_again(tmp_path, monkeypatch):
             break
         time.sleep(0.05)
     assert jobs.get(jid)["state"] == "done", jobs.get(jid)
-    assert calls == [], calls
-    assert flaky.saves == 2
+    assert calls, "resume reviews the posts after the save succeeds"
     assert set(inner.load_posts()["Document ID"]) >= {"P1", "P2"}
-    assert paid  # the first pass really was charged
+    assert flaky.saves == 2
 
 
 def test_checkpoint_sequence_is_unique_when_batches_race(tmp_path, monkeypatch):

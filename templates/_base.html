@@ -92,7 +92,7 @@ label{display:block;font-size:14px;margin:0 0 6px}
 .rel-btns .btn{min-height:40px;font-size:13px}
 .rel-btns .btn[aria-pressed=true]{border-color:var(--gold);background:var(--gold);color:#0b1526;font-weight:700}
 .item-hidden{opacity:.55;border-style:dashed}
-.dl-list{list-style:none;padding:0;margin:0;font-size:13px}
+.sec-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}.ptext{margin:4px 0;white-space:pre-line}.dl-list{list-style:none;padding:0;margin:0;font-size:13px}
 .dl-list li{margin:6px 0;word-break:break-word}
 
 
@@ -121,11 +121,11 @@ input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
 <button type="button" class="drawer-toggle" style="display:none" aria-hidden="true"></button>
 <h2>Add data</h2>
 <div class="card">
-<h3>Meltwater export</h3>
-<p>Upload an Excel or CSV export. Posts are screened for threat and protest language, scored, saved to the dashboard, and offered as an Excel download of the flagged rows.</p>
+<h3>Meltwater or Seerist export</h3>
+<p>Upload a Meltwater Excel or CSV export, or a Seerist PDF. Posts are pre-sorted for threat and protest language, saved to the dashboard, reviewed by AI, and offered as an Excel download.</p>
 <form class="progress-form" data-unit="posts" method="post" action="/upload" enctype="multipart/form-data">
 <label for="files">Export files</label>
-<input id="files" type="file" name="files" accept=".xlsx,.csv" multiple required>
+<input id="files" type="file" name="files" accept=".xlsx,.csv,.pdf" multiple required>
 <p style="margin-top:10px"><button class="btn primary" type="submit">Screen posts</button></p></form>
 </div>
 <div class="card" id="recent-downloads"{% if not recent_downloads %} hidden{% endif %}>

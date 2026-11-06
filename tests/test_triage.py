@@ -82,8 +82,9 @@ def test_upload_endpoint(client):
     r = client.post("/upload", headers=_auth("test-pw"),
                     data={"files": (xbuf, "export.xlsx")}, content_type="multipart/form-data")
     assert r.status_code == 200
-    out = pd.read_excel(io.BytesIO(r.data))
-    assert list(out["category"]) == ["threat", "protest", "both"]
+    book = pd.read_excel(io.BytesIO(r.data), sheet_name=None)
+    assert list(book["Threat posts"]["category"]) == ["threat", "both"]
+    assert list(book["Protest posts"]["category"]) == ["protest", "both"]
 
 
 SAMPLE = os.environ.get("MELTWATER_SAMPLE_PATH")
@@ -120,7 +121,7 @@ def test_refine_with_mock_batches():
 
     flagged = flag_posts(synthetic_df(), refine_fn=lambda s, u: '{"results": []}')
     out = refine(flagged.drop(columns=REFINE_COLUMNS), ["Hit Sentence"], complete=fake, batch_size=2)
-    assert calls == [2, 1]
+    assert sorted(calls) == [1, 1, 1]  # one batch per category: threat, protest, both
     assert list(out["is_genuine"]) == [True, False, True]
     assert set(out["refined_category"]) == {"threat"} and set(out["severity"]) == {"high"}
     assert set(out["threat_type"]) == {"bombing or arson"}

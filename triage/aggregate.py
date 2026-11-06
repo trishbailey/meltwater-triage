@@ -45,22 +45,3 @@ def recurring_threat_posters(flagged: pd.DataFrame, min_count: int = 2) -> pd.Da
         first_seen=("dt", "min"), last_seen=("dt", "max"))
     g = g[g["threat_posts"] >= min_count]
     return g.sort_values(["threat_posts", "total_engagement"], ascending=False).reset_index(drop=True)[cols]
-
-
-def heat_by_topic(scored: pd.DataFrame) -> pd.DataFrame:
-    """Topics ranked by average and total heat, with post count and engagement."""
-    cols = ["topic", "posts", "avg_heat", "total_heat", "max_heat", "total_engagement",
-            "avg_engagement"]
-    if scored.empty or "heat_score" not in scored:
-        return pd.DataFrame(columns=cols)
-    s = scored[scored["heat_score"].notna() & scored["heat_topic"].fillna("").ne("")]
-    if s.empty:
-        return pd.DataFrame(columns=cols)
-    work = pd.DataFrame({"topic": s["heat_topic"], "heat": s["heat_score"].astype(float),
-                         "eng": _engagement(s)})
-    g = work.groupby("topic").agg(posts=("heat", "size"), avg_heat=("heat", "mean"),
-                                  total_heat=("heat", "sum"), max_heat=("heat", "max"),
-                                  total_engagement=("eng", "sum"), avg_engagement=("eng", "mean"))
-    g["avg_heat"] = g["avg_heat"].round(2)
-    g["avg_engagement"] = g["avg_engagement"].round(1)
-    return g.sort_values(["avg_heat", "total_heat"], ascending=False).reset_index()[cols]

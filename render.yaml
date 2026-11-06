@@ -16,15 +16,11 @@ services:
         sync: false
       - key: REFINE_MODEL
         value: claude-haiku-4-5
-      - key: HEAT_MAX_POSTS
-        value: "300"
       - key: REFINE_BATCH_SIZE
-        value: "40"
-      - key: HEAT_BATCH_SIZE
-        value: "40"
+        value: "25"
       - key: ANTHROPIC_CONCURRENCY
-        value: "8"
-      # Posts sent to Claude per UTC month (review and heat each count). Unset means no monthly limit.
+        value: "12"
+      # Posts sent to Claude per UTC month . Unset means no monthly limit.
       - key: ANTHROPIC_MONTHLY_POST_CAP
         sync: false
       # Add DATABASE_URL from a Render Postgres instance to keep month-to-month history

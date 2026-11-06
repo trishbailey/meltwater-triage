@@ -172,6 +172,11 @@ def _centroid(place: str) -> tuple[float, float] | None:
     for name, coords in CITY_CENTROIDS.items():
         if re.search(rf"\b{re.escape(name)}\b", key):
             return coords
+    # Named defense and civic sites ("HMAS Stirling", "Pine Gap", "Osborne") need no network.
+    for label, lat, lon, _kind in ASSETS:
+        low = label.lower()
+        if key == low or (len(key) >= 5 and key in low) or low in key:
+            return (lat, lon)
     return None
 
 

@@ -26,17 +26,17 @@ If `ANTHROPIC_API_KEY` is set, each flagged post is reviewed by Anthropic Claude
 `is_genuine`, `refined_category`, `narrative_summary`, `theme`, `severity`,
 `threat_type`, `targets`, `named_individuals` (lists stored as `; `-separated text). Without a key
 the stage is skipped. Settings: `REFINE_MODEL` (default `claude-haiku-4-5`),
-`REFINE_BATCH_SIZE` (default 20), `REFINE_DISABLED=1` to turn it off. A failed batch
+`REFINE_BATCH_SIZE` (default 25), `REFINE_DISABLED=1` to turn it off. A failed batch
 leaves those columns blank and keeps the keyword results. Each request uses
 `ANTHROPIC_MAX_TOKENS` (default 8192), `ANTHROPIC_TIMEOUT_SECONDS` (default 120),
 and `ANTHROPIC_MAX_RETRIES` (default 0, so one batch is one API call). Code: `triage/refine.py`.
 
 ### Monthly Claude cap
 `ANTHROPIC_MONTHLY_POST_CAP` limits how many posts are sent to Claude in a UTC month.
-Every post included in a review or heat request counts, and the total is stored in
+Every post included in a review request counts, and the total is stored in
 the `anthropic_usage` table. After the cap is reached, later posts are not sent and
 the workbook's **Warnings** sheet says so. Keyword flags are still returned. Review
-runs before heat, so a tight cap is spent on flagged posts first. The guard does
+only ever covers flagged posts. The guard does
 nothing when the variable is unset. It skips Claude entirely when the variable is
 set but `DATABASE_URL` / `PERSIST_RUNS` is not, because the count would reset on the
 next process. Invalid values also skip Claude.
@@ -51,18 +51,10 @@ Protest fields from the review: `protest_location`, `protest_topic`, `organizers
 - `WEAK_PROTEST_TERMS` ("demo", "register", "training", "outside") count only alongside
   another protest signal.
 
-## Heated-language analysis
-Covers all screened posts, not just keyword hits. Each scored post gets `heat_score` (0-10),
-`heat_topic` (one of `HEAT_TOPICS` in `triage/keywords.py`, else "other"), `heat_subtopic` (free text), `heated_phrases`, `heat_sampled`. Cost is capped by `HEAT_MAX_POSTS`
-(default 300; above that the highest-engagement posts are scored first) and batched by
-`HEAT_BATCH_SIZE` (default 25). `HEAT_DISABLED=1` turns it off; it is skipped without
-`ANTHROPIC_API_KEY`. Heat shares `ANTHROPIC_MONTHLY_POST_CAP` with the review stage.
-
 ## Output workbook
 Sheets: `Warnings` (only when the monthly cap skipped Claude, or the database save
 failed), `Flagged`, `Recurring threat posters` (handle, name, threat post count, total
-engagement, first/last seen; 2+ threat posts), and, when heat ran, `Heat by topic` (ranked
-by average then total heat, with engagement) and `Heat (all posts)`. Cell text is
+engagement, first/last seen; 2+ threat posts), and the sheets `Threat posts` and `Protest posts` (all original columns, AI columns, analyst relevance). Cell text is
 written as text, including values that start with `=`.
 
 ## Uploads, migrations, and duplicates
@@ -70,7 +62,7 @@ written as text, including values that start with `=`.
 (including `upload_jobs.payload`) without deleting rows. The uploaded file is
 stored before screening starts, so a restart resumes a running job from those
 bytes. Excel is read in chunks (`SCREEN_CHUNK_ROWS`, default 2000). Files larger
-than `SCREEN_KEEP_ROWS` (default 2500) keep flagged rows and the heat sample in
+than `SCREEN_KEEP_ROWS` (default 2500) keep flagged rows in
 memory; the screened-row count is unchanged.
 
 Before review, a post already stored under the same Document ID, normalized URL,
@@ -88,8 +80,8 @@ an API-key watermark, so they are not used). Zoom level 7 and closer adds
 darkened OpenStreetMap streets.
 
 ## Storage
-`triage/storage.py` (SQLAlchemy) stores each upload run and every flagged or heat-scored post, deduped by
-Document ID. Reporting periods use the post date (`post_week`, `post_month` from Meltwater Date), with upload week/month kept as secondary fields. Helpers: `monthly_counts`, `monthly_heat`, `load_posts`. Enabled when
+`triage/storage.py` (SQLAlchemy) stores each upload run and every flagged post, deduped by
+Document ID. Reporting periods use the post date (`post_week`, `post_month` from Meltwater Date), with upload week/month kept as secondary fields. Helpers: `monthly_counts`, `load_posts`. Enabled when
 `DATABASE_URL` is set (Postgres; `postgres://` URLs are rewritten to
 `postgresql+psycopg://`) or `PERSIST_RUNS=1` (local SQLite at
 `STORAGE_SQLITE_PATH`, default `data/triage.db`). Render's free filesystem is temporary,
@@ -110,7 +102,7 @@ uploads and alert deletion reject cross-site Origin headers. For local http test
 
 - `POST /alerts/<id>/delete` (signed in): deletes one alert; the dashboard has a Delete button on each alert.
 - `/status` (password): stored rows by post month and flag type, upload runs, alert count, and posts sent for review this month against the monthly cap.
-- `/dashboard` (password): month selector; threat vs protest volume; month-over-month strip; written monthly summary; threat types by engagement; top targets and named people; recurring threat posters with drill-down; protest locations, topics and organizers; heated-topic ranking; early-warning layer.
+- `/dashboard` (password): three parts. (1) A map of the last 30 days with Threats and Protests toggles only. (2) Threats and (3) Protests, each with topic analysis, top targets, top authors (with their posts) and a Flagged posts dropdown showing platform, handle, date, text and Relevant / Not relevant buttons. Meltwater posts, Seerist PDF items and alerts share one dataset and the same pre-sort. Each section has a download button (`/download/threats.xlsx`, `/download/protests.xlsx`, `?days=` 1-365) with the original columns plus the AI review.
 - `POST /api/alerts` with `Authorization: Bearer $ALERT_INGEST_TOKEN` and a JSON body:
   `source` (x, bluesky, facebook, instagram, newsletter), `url`, `author`, `text`, `posted_at` (ISO 8601),
   `matched_terms` (list or `;`-separated), `signal_level` (critical, high, medium, low).
@@ -118,7 +110,7 @@ uploads and alert deletion reject cross-site Origin headers. For local http test
 - Alerts are deduped by normalized URL (host lowercased, `www.` dropped, twitter.com = x.com, query, fragment
   and trailing slash removed). The first-seen time is kept. An alert whose URL later arrives in a Meltwater
   upload is marked "Confirmed in Meltwater" with its lead time. Alerts are a separate layer and never enter
-  Meltwater threat, heat or volume totals.
+  Meltwater threat or protest totals.
 
 ## Run locally
 ```
