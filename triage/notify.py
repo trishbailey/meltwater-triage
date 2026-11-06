@@ -1,8 +1,9 @@
 """Tell the analyst when Claude has passed new posts on for human review.
 
 Channels (set any or all):
-  ALERT_WEBHOOK_URL   an https URL that accepts {"text": "..."} (Slack, Teams and Discord-compatible
-                      incoming webhooks; Discord needs the /slack suffix)
+  ALERT_WEBHOOK_URL   an https webhook URL. Microsoft Teams (a Workflows "when a webhook request is
+                      received" URL) gets an Adaptive Card; other URLs (Slack, Discord /slack) get
+                      {"text": "..."}
   ALERT_EMAIL_TO      comma-separated recipients, with SMTP_HOST, SMTP_PORT (587), SMTP_USER,
                       SMTP_PASSWORD and SMTP_FROM (defaults to SMTP_USER)
 The first run records the posts already on the dashboard and sends nothing, so the backlog does not
@@ -15,6 +16,7 @@ import logging
 import os
 import smtplib
 import urllib.request
+from urllib.parse import urlsplit
 from email.message import EmailMessage
 
 import pandas as pd
@@ -49,10 +51,34 @@ def _key(rec: dict) -> tuple[str, str]:
     return kind, str(iid)
 
 
-def _post_webhook(url: str, text: str) -> None:
+_TEAMS_HOSTS = ("webhook.office.com", "office.com", "logic.azure.com", "powerplatform.com", "powerautomate.com")
+
+
+def is_teams(url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in _TEAMS_HOSTS)
+
+
+def payload_for(url: str, text: str, title: str = "") -> dict:
+    """Teams (Workflows and legacy connectors) takes an Adaptive Card; Slack-style hooks take {"text"}."""
+    if not is_teams(url):
+        return {"text": text}
+    body = []
+    if title:
+        body.append({"type": "TextBlock", "text": title, "weight": "Bolder", "size": "Medium", "wrap": True})
+    for line in text.split("\n"):
+        if line.strip():
+            body.append({"type": "TextBlock", "text": line, "wrap": True})
+    return {"type": "message", "attachments": [{
+        "contentType": "application/vnd.microsoft.card.adaptive", "contentUrl": None,
+        "content": {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard",
+                    "version": "1.4", "body": body}}]}
+
+
+def _post_webhook(url: str, text: str, title: str = "") -> None:
     if not url.lower().startswith("https://"):
         raise ValueError("ALERT_WEBHOOK_URL must be https")
-    req = urllib.request.Request(url, data=json.dumps({"text": text}).encode(),
+    req = urllib.request.Request(url, data=json.dumps(payload_for(url, text, title)).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
     urllib.request.urlopen(req, timeout=10).read()
 
@@ -114,7 +140,7 @@ def announce(storage, env=None, df: pd.DataFrame | None = None) -> dict:
     sent = []
     if env.get("ALERT_WEBHOOK_URL"):
         try:
-            _post_webhook(env["ALERT_WEBHOOK_URL"], text)
+            _post_webhook(env["ALERT_WEBHOOK_URL"], text, subject)
             sent.append("webhook")
         except Exception as exc:  # noqa: BLE001
             log.warning("webhook alert failed: %s", type(exc).__name__)
