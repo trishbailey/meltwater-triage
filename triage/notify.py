@@ -111,8 +111,6 @@ def configured(env=None) -> bool:
 
 
 
-_ABSTRACT_TARGETS = {"aukus", "submarine program", "nuclear submarine", "nuclear-powered submarine",
-                     "pillar ii", "pillar one", "ssn-aukus"}
 _VIOLENT = re.compile(
     r"\b(?:bomb(?:ed|ing)?|blow(?:ing)? up|assassinat\w*|behead\w*|lynch\w*|sabotag\w*|burn(?:ed|ing)? down|"
     r"set fire to|shoot|shot|shooting|kill(?:ed|ing)?|murder\w*|stab(?:bed|bing)?|execute[d]?|hang(?:ed)?|"
@@ -127,10 +125,10 @@ _FRAMING = re.compile(
 
 
 def _concrete_target(text: str) -> bool:
-    from .filters import Patterns
+    from .filters import ABSTRACT_TARGETS
     p = _patterns()
     hits = [m.group(0) for pat in (p.target, p.target_cs) if pat for m in pat.finditer(text)]
-    return any(h.lower() not in _ABSTRACT_TARGETS for h in hits)
+    return any(h.lower() not in ABSTRACT_TARGETS for h in hits)
 
 
 _P = None

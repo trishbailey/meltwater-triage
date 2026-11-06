@@ -176,7 +176,7 @@ def test_storage_failure_still_returns_results(monkeypatch):
         def save_run(self, *a, **k):
             raise RuntimeError("db down")
 
-    buf = io.BytesIO(); pd.DataFrame({"Hit Sentence": ["kill the AUKUS deal"]}).to_excel(buf, index=False)
+    buf = io.BytesIO(); pd.DataFrame({"Hit Sentence": ["kill the defence minister"]}).to_excel(buf, index=False)
     res = process([("f.xlsx", buf.getvalue())], storage=Broken())
     assert len(res.flagged) == 1 and res.run_id is None and res.notes
     warn = pd.read_excel(io.BytesIO(to_workbook(res)), sheet_name="Warnings")
@@ -188,7 +188,7 @@ def _cap_file():
     df = pd.DataFrame({
         "Document ID": ["1", "2", "3", "4"],
         "Engagement": [1, 100, 50, 3],
-        "Hit Sentence": ["kill the AUKUS deal", "bomb HMAS Stirling", "nice weather", "lovely day"],
+        "Hit Sentence": ["kill the defence minister", "bomb HMAS Stirling", "nice weather", "lovely day"],
     })
     buf = io.BytesIO()
     df.to_excel(buf, index=False)
@@ -292,7 +292,7 @@ def test_document_ids_dedupe_across_excel_floats(tmp_path):
     st = Storage(f"sqlite:///{tmp_path/'id.db'}")
     rows = pd.DataFrame({
         "Document ID": [12345.0, "12345", "  ", '"'],
-        "Hit Sentence": ["kill AUKUS one", "kill AUKUS two", "bomb HMAS Stirling", "attack the defence minister"],
+        "Hit Sentence": ["kill the senator one", "kill the senator two", "bomb HMAS Stirling", "attack the defence minister"],
         "Date": ["2026-10-01"] * 4,
         "category": ["threat"] * 4,
         "is_flagged": [True] * 4,
@@ -307,7 +307,7 @@ def test_excel_blank_does_not_float_document_id(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_MONTHLY_POST_CAP", raising=False)
     df = pd.DataFrame({
         "Document ID": [12345, None],
-        "Hit Sentence": ["kill the AUKUS deal", "bomb HMAS Stirling"],
+        "Hit Sentence": ["kill the defence minister", "bomb HMAS Stirling"],
         "Date": ["2026-10-01", "2026-10-02"],
     })
     buf = io.BytesIO()

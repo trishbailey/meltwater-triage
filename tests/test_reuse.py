@@ -39,7 +39,7 @@ def test_second_upload_skips_claude_for_same_document_ids(tmp_path, monkeypatch)
     monkeypatch.setenv("HEAT_MAX_POSTS", "50")
     st = Storage(f"sqlite:///{tmp_path/'r.db'}")
     data = _book([
-        {"Document ID": "A1", "Engagement": 10, "Hit Sentence": "kill the AUKUS deal tomorrow"},
+        {"Document ID": "A1", "Engagement": 10, "Hit Sentence": "kill the defence minister tomorrow"},
         {"Document ID": "A2", "Engagement": 5, "Hit Sentence": "bomb HMAS Stirling next week"},
         {"Document ID": "A3", "Engagement": 1, "Hit Sentence": "nice weather today"},
     ])
@@ -64,7 +64,7 @@ def test_same_text_retweet_reuses_classification_in_one_file(tmp_path, monkeypat
     monkeypatch.delenv("ANTHROPIC_MONTHLY_POST_CAP", raising=False)
     monkeypatch.setenv("HEAT_MAX_POSTS", "50")
     st = Storage(f"sqlite:///{tmp_path/'t.db'}")
-    text = "We will kill the AUKUS deal and bomb the base on Saturday at the harbour"
+    text = "We will kill the defence minister and bomb the base on Saturday at the harbour"
     data = _book([
         {"Document ID": "R1", "URL": "https://x.com/a/1", "Engagement": 10, "Hit Sentence": text},
         {"Document ID": "R2", "URL": "https://x.com/b/2", "Engagement": 3, "Hit Sentence": text},
@@ -86,7 +86,7 @@ def test_same_file_url_and_text_duplicates_collapse(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("ANTHROPIC_MONTHLY_POST_CAP", raising=False)
     st = Storage(f"sqlite:///{tmp_path/'h.db'}")
-    text = "We will kill the AUKUS deal and bomb the base on Saturday at the harbour"
+    text = "We will kill the defence minister and bomb the base on Saturday at the harbour"
     data = _book([
         {"Document ID": "H1", "URL": "https://x.com/a/1", "Engagement": 10, "Hit Sentence": text},
         {"Document ID": "H2", "URL": "https://x.com/a/1", "Engagement": 4,

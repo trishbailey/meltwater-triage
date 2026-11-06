@@ -81,3 +81,24 @@ def test_slogan_in_news_commentary_is_not_a_protest():
          "is pressuring President Donald Trump to launch a nuclear strike on Iran, targeting an enrichment facility.")
     assert f.screen_text(t, p)["category"] == ""
     assert f.screen_text("Rally against AUKUS: No to AUKUS, Saturday 14 November outside Town Hall", p)["category"] == "protest"
+
+
+def test_figurative_and_off_topic_commentary_is_not_a_threat():
+    from triage import filters as f
+    p = f.Patterns()
+    for t in ("@x The US midterms will drown out #auspol. Tomorrow's AUKUS Public Inquiry report at the National "
+              "Press Club won't get a look-in.",
+              "Rivka Lafair questions why Israel did not kill or expel all Palestinians in 1948. We will never "
+              "forget ALP complicity #Auspol #AUKUS",
+              "Kill the AUKUS deal now", "The AUKUS deal will hurt workers and damage the budget #AUKUS"):
+        assert f.screen_text(t, p)["category"] == "", t
+    assert f.screen_text("Someone should shoot the defence minister over AUKUS", p)["category"] == "threat"
+    assert f.screen_text("I will blow up the AUKUS base", p)["category"] == "threat"
+
+
+def test_forum_media_release_post_is_not_a_protest():
+    from triage import filters as f
+    t = ("This is not a protest. the 'AUKUS Forum' has now taken down its media release titled 'Start Building the "
+         "East Coast Submarine Base Now' which nominated Newcastle as its preferred option. #auspol #AUKUS "
+         "#AUKUSPublicInquiry #accountability #transparency ; The 'AUKUS Revolving Door")
+    assert f.screen_text(t, f.Patterns())["category"] == ""

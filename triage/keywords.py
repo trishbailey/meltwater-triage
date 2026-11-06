@@ -304,10 +304,12 @@ CASE_SENSITIVE_TARGET_TERMS = [
 
 # Weak threat terms: count only when a target term appears within
 # THREAT_PROXIMITY_WORDS words of the term (other threat terms just need a target anywhere).
+# Everyday words ("kill the deal", "drown out", "damage the budget") count only next to a concrete
+# person or facility; abstract targets such as "AUKUS" or the hashtag do not qualify.
 CONTEXT_REQUIRED_THREAT_TERMS = [
-    "hang",
-    "attack",
-    "destroy",
+    "hang", "attack", "destroy", "drown", "kill", "shoot", "harm", "hurt", "damage", "threat",
+    "threaten", "disable", "cripple", "wipe out", "execute", "murder", "stab", "poison", "slaughter",
+    "suffocate", "strangle", "torture", "maim", "explode", "decapitate",
 ]
 THREAT_PROXIMITY_WORDS = 8
 
