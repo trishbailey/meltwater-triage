@@ -24,10 +24,11 @@ WINDOW_HOURS = int(os.environ.get("COLLECT_WINDOW_HOURS", "16"))
 WINDOW = f"{WINDOW_HOURS} hours"
 
 
-def since_time(now: datetime | None = None) -> datetime:
+def since_time(now: datetime | None = None, hours: float | None = None) -> datetime:
     """Start of the pull window, never earlier than the dashboard start date (default 1 November)."""
     from . import unified
-    return max((now or datetime.now(timezone.utc)) - timedelta(hours=WINDOW_HOURS), unified.start())
+    back = timedelta(hours=WINDOW_HOURS if hours is None else hours)
+    return max((now or datetime.now(timezone.utc)) - back, unified.start())
 
 
 def apify_window(now: datetime | None = None) -> str:
@@ -63,6 +64,7 @@ X_QUERIES = [
     (_X_PLACES + ' (bomb OR "blow up" OR sabotage OR kill OR shoot OR "burn down" OR assassinate OR '
      'traitor OR "know where you live") -is:retweet lang:en', "recency"),
 ]
+X_WINDOW_HOURS = int(os.environ.get("X_WINDOW_HOURS", "26"))  # X runs once a day (X_HOURS, UTC)
 X_TOKEN_VARS = ("X_BEARER_TOKEN", "TWITTER_BEARER_TOKEN", "X_API_BEARER_TOKEN")
 
 ACTOR_INSTAGRAM = "apify~instagram-post-scraper"
@@ -158,7 +160,7 @@ def x_token(env) -> str:
 def x_alerts(token: str, fetch=_http, now: datetime | None = None, top_n: int = 10,
              queries=None) -> list[dict]:
     """Boolean searches (protest, threat), each limited to `top_n` posts since the last window."""
-    since = since_time(now).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = since_time(now, X_WINDOW_HOURS).strftime("%Y-%m-%dT%H:%M:%SZ")
     out, seen = [], set()
     for query, order in (queries or X_QUERIES):
         params = urllib.parse.urlencode({
@@ -188,7 +190,7 @@ def _x_budget(storage, env, now: datetime | None) -> int:
     return max(0, cap - used)
 
 
-def collect(storage, fetch=_http, env=None, now: datetime | None = None) -> dict:
+def collect(storage, fetch=_http, env=None, now: datetime | None = None, slot_hour: int | None = None) -> dict:
     """Pull every configured source and store new posts as alerts. Returns a per-source summary."""
     env = os.environ if env is None else env
     summary: dict = {}
@@ -211,7 +213,10 @@ def collect(storage, fetch=_http, env=None, now: datetime | None = None) -> dict
     else:
         summary["bluesky"] = "skipped: BLUESKY_HANDLE or BLUESKY_APP_PASSWORD not set"
     xt = x_token(env)
-    if xt:
+    x_hours = {int(h) for h in (env.get("X_HOURS", "6") or "").split(",") if h.strip()}
+    if xt and slot_hour is not None and x_hours and slot_hour not in x_hours:
+        summary["x"] = f"skipped: X runs at {sorted(x_hours)} UTC only"
+    elif xt:
         top = int(env.get("X_TOP_N", "10") or 10)
         room = _x_budget(storage, env, now)
         queries = X_QUERIES[:room]
@@ -301,7 +306,7 @@ def start_scheduler(storage, logger=log, env=None, sleep=None):
                 continue
             last = slot
             try:
-                logger.info("collection %s: %s", slot, collect(storage))
+                logger.info("collection %s: %s", slot, collect(storage, slot_hour=int(slot[-2:])))
             except Exception:  # noqa: BLE001
                 logger.exception("collection %s failed", slot)
             try:

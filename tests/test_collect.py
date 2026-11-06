@@ -112,3 +112,17 @@ def test_pull_window_never_starts_before_1_november():
     later = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
     assert c.since_time(later) == datetime(2026, 11, 5, 20, tzinfo=timezone.utc)
     assert c.apify_window(later) == c.WINDOW
+
+
+def test_x_runs_only_in_its_slot_while_other_sources_run_every_slot(tmp_path):
+    st = Storage(f"sqlite:///{tmp_path/'s.db'}")
+    urls = []
+    fetch = lambda url, data=None, headers=None, timeout=0: urls.append(url) or ([] if "apify" in url else {})
+    env = {"X_BEARER_TOKEN": "t", "APIFY_TOKEN": "a"}
+    now = datetime(2026, 11, 6, 20, tzinfo=timezone.utc)
+    out = c.collect(st, fetch=fetch, env=env, now=now, slot_hour=20)
+    assert out["x"].startswith("skipped: X runs at") and any("apify" in u for u in urls)
+    assert not any("x.com/2" in u for u in urls)
+    out = c.collect(st, fetch=fetch, env=env, now=now.replace(hour=6), slot_hour=6)
+    assert isinstance(out["x"], dict)
+    assert c.since_time(now, 26) == datetime(2026, 11, 5, 18, tzinfo=timezone.utc)
