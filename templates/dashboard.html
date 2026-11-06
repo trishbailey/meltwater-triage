@@ -1,4 +1,4 @@
-{% extends "_base.html" %}{% block title %}Threat and Protest Monitor{% endblock %}{% block body %}
+{% extends "_base.html" %}{% block title %}AUKUS Threat and Protest Monitor{% endblock %}{% block body %}
 {% macro post_row(post) %}
 {% set plabel = post.label %}
 <div class="post post-row {% if plabel=='not_relevant' %}item-hidden{% endif %}" data-item-type="{{ post.item_type }}" data-item-id="{{ post.item_id }}" data-source="{{ post.platform }}" data-label="{{ plabel }}" data-topic="{{ post.topic }}" data-targets="{{ post.target_list|join('|') }}" {% if plabel=='not_relevant' %}hidden{% endif %}>
@@ -65,7 +65,7 @@
 </section>
 {% endmacro %}
 
-<h1>Threat and Protest Monitor</h1>
+<h1>AUKUS Threat and Protest Monitor</h1>
 <p class="intro">Posts {{ window_label }}. Meltwater and Seerist posts are combined. The analysis and the map (at the bottom) show only posts you have marked Relevant. Use <strong>Add data</strong> to upload an export.</p>
 {% if not storage_ready %}<p class="err">Storage is not configured (DATABASE_URL is not set), so there is nothing to show.</p>{% endif %}
 <p class="note"><label><input type="checkbox" id="show-hidden"> Show items marked not relevant</label></p>
