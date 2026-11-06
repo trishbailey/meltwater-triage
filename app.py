@@ -239,9 +239,14 @@ def create_app() -> Flask:
     @app.get("/api/map")
     @require_password
     def api_map():
+        from triage.export import _is_relevant
         from triage.mapdata import build_map
         st = _storage()
-        return build_map(unified.load(st) if st is not None else None, days=unified.WINDOW_DAYS)
+        raw = unified.load(st) if st is not None else None
+        if raw is not None and len(raw):
+            labels = _labels()  # the map shows only posts the analyst marked Relevant
+            raw = raw[[_is_relevant(r, labels) for r in raw.to_dict(orient="records")]]
+        return build_map(raw, days=unified.WINDOW_DAYS)
 
     def _category_download(kind: str):
         st = _storage()

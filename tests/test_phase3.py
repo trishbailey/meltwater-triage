@@ -130,9 +130,12 @@ def test_dashboard_view_has_threat_and_protest_sections():
     t, p = ctx["threats"], ctx["protests"]
     assert t["count"] == 3 and p["count"] == 1
     assert "authors" not in t and t["relevant"] == 1
-    assert t["targets"][0]["label"] == "Military bases and facilities"
-    assert {x["label"].lower() for x in t["topics"]} == {"violence", "doxxing"}
-    assert p["topics"][0]["label"] == "Other AUKUS-related"
+    # analysis counts only the post marked Relevant (id 2: violence, Base A + Minister B)
+    assert {x["label"].lower() for x in t["topics"]} == {"violence"}
+    assert t["targets"] and all(x["value"] == 1 for x in t["targets"])
+    assert p["topics"] == [] and p["targets"] == []
+    none = dash.build(_posts(), {})
+    assert none["threats"]["topics"] == [] and none["threats"]["targets"] == []
     assert t["download"] == "/download/threats.xlsx" and p["download"] == "/download/protests.xlsx"
     assert {c["handle"] for c in t["posts"]} == {"@bad"} and t["posts"][0]["platform"]
     assert "engagement" not in t["topics"][0] and "engagement" not in t["targets"][0]
@@ -198,3 +201,8 @@ def test_download_contains_only_posts_marked_relevant():
     (name, frame), *rest = single_sheet(df, "threat", labels, relevant_only=True)
     assert name == "Threat posts" and list(frame["document_id"].astype(str)) == ["2"] and not rest
     assert single_sheet(df, "threat", {}, relevant_only=True)[0][1].empty
+
+
+def test_map_shows_only_relevant_posts(client):
+    data = client.get("/api/map", headers=auth()).get_json()
+    assert data["threats"] == [] and data["events"] == []

@@ -1,7 +1,7 @@
 {% extends "_base.html" %}{% block title %}Threat and Protest Monitor{% endblock %}{% block body %}
 {% macro post_row(post) %}
 {% set plabel = post.label %}
-<div class="post post-row {% if plabel=='not_relevant' %}item-hidden{% endif %}" data-item-type="{{ post.item_type }}" data-item-id="{{ post.item_id }}" data-source="{{ post.platform }}" data-label="{{ plabel }}" {% if plabel=='not_relevant' %}hidden{% endif %}>
+<div class="post post-row {% if plabel=='not_relevant' %}item-hidden{% endif %}" data-item-type="{{ post.item_type }}" data-item-id="{{ post.item_id }}" data-source="{{ post.platform }}" data-label="{{ plabel }}" data-topic="{{ post.topic }}" data-targets="{{ post.target_list|join('|') }}" {% if plabel=='not_relevant' %}hidden{% endif %}>
 <div class="post-text">
 <span class="src">{{ post.platform or "Unknown platform" }}</span>
 <strong>{{ post.handle or "Unknown user" }}</strong>
@@ -17,7 +17,7 @@
 {% endmacro %}
 {% macro bars(items, color, empty) %}
 {% if items %}<div class="bars">{% for row in items %}
-<div class="bar"><div class="lab">{{ row.label }}{% if row.themes %}<div class="note">{{ row.themes|join(", ") }}</div>{% endif %}</div><div class="track" style="display:flex;align-items:center">
+<div class="bar"><div class="lab">{{ row.label }}</div><div class="track" style="display:flex;align-items:center">
 <div class="fill" style="width:{{ row.pct }}%;background:{{ color }}"></div>
 <span class="val">{{ row.value }} post{{ "s" if row.value != 1 }}</span>
 </div></div>{% endfor %}</div>
@@ -29,23 +29,25 @@
 <a class="btn dl-btn" href="{{ s.download }}" download data-noun="{{ noun }}"{% if not s.relevant %} aria-disabled="true"{% endif %}>Download <span class="dl-n">{{ s.relevant }}</span> relevant {{ noun }} post<span class="dl-s">{{ "s" if s.relevant != 1 }}</span> (Excel)</a></div>
 {% if s.count %}
 <p class="note">{{ s.reviewed }} reviewed by AI{% if s.pending %}, {{ s.pending }} pre-sorted and waiting for review{% endif %}. Review the flagged posts below and mark each Relevant or Not relevant. The download contains only the posts marked Relevant, with the raw data and the AI analysis.</p>
-<div class="grid2">
-<div><h3>Topic analysis</h3>{{ bars(s.topics, s.color, "No topics yet.") }}</div>
-<div><h3>Top {{ noun }} targets</h3>{{ bars(s.targets, s.color, "Targets appear after AI review.") }}</div>
-</div>
-<details class="flagged"><summary><strong>Flagged posts</strong> ({{ s.count }})</summary>
+<details class="flagged" open><summary><strong>Flagged posts</strong> ({{ s.count }})</summary>
 <div class="body">{% for post in s.posts %}{{ post_row(post) }}{% endfor %}
 {% if s.more %}<p class="note">Showing the newest {{ s.posts|length }}. {{ s.more }} more are in the download.</p>{% endif %}</div></details>
+<div class="analysis" data-color="{{ s.color }}">
+<p class="note an-empty"{% if s.relevant %} hidden{% endif %}>Topic and target analysis appears once you mark posts Relevant. It counts only those posts.</p>
+<div class="grid2 an-body"{% if not s.relevant %} hidden{% endif %}>
+<div><h3>Topic analysis <span class="note">(<span class="an-n">{{ s.relevant }}</span> relevant)</span></h3><div class="an-topics">{{ bars(s.topics, s.color, "No topics yet.") }}</div></div>
+<div><h3>Top {{ noun }} targets</h3><div class="an-targets">{{ bars(s.targets, s.color, "No targets named.") }}</div></div>
+</div></div>
 {% else %}<p>No {{ noun }} posts in the last {{ window_days }} days.</p>{% endif %}
 </section>
 {% endmacro %}
 
 <h1>Threat and Protest Monitor</h1>
-<p class="intro">Last {{ window_days }} days. Meltwater and Seerist posts are combined. Use <strong>Add data</strong> to upload an export.</p>
+<p class="intro">Last {{ window_days }} days. Meltwater and Seerist posts are combined. The map and the analysis show only posts you have marked Relevant. Use <strong>Add data</strong> to upload an export.</p>
 {% if not storage_ready %}<p class="err">Storage is not configured (DATABASE_URL is not set), so there is nothing to show.</p>{% endif %}
 <p class="note"><label><input type="checkbox" id="show-hidden"> Show items marked not relevant</label></p>
 
-<section class="panel" id="map-panel"><h2>Map</h2>
+<section class="panel" id="map-panel"><h2>Map <span class="note">relevant posts only</span></h2>
 <div class="map-filters" role="group" aria-label="Map layers">
 <button type="button" class="btn map-layer" data-layer="threats" aria-pressed="true">Threats</button>
 <button type="button" class="btn map-layer" data-layer="protests" aria-pressed="true">Protests</button>
@@ -62,6 +64,37 @@
 <script src="{{ url_for('static', filename='map-labels.js') }}"></script>
 <script>
 (function(){
+function esc(t){return String(t).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];});}
+function barsHtml(map,color,empty){
+  var items=Object.keys(map).map(function(k){return map[k];});
+  items.sort(function(a,b){return (a.label===PEND)-(b.label===PEND)||(a.label==="Other")-(b.label==="Other")||b.n-a.n||(a.label<b.label?-1:1);});
+  items=items.slice(0,8);
+  if(!items.length) return '<p class="note">'+empty+'</p>';
+  var top=items.reduce(function(m,i){return Math.max(m,i.n);},1);
+  return '<div class="bars">'+items.map(function(i){
+    return '<div class="bar"><div class="lab">'+esc(i.label)+'</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:'+(Math.round(1000*i.n/top)/10)+'%;background:'+color+'"></div><span class="val">'+i.n+' post'+(i.n===1?'':'s')+'</span></div></div>';}).join("")+'</div>';
+}
+var PEND="Not yet reviewed";
+function analyse(sec,seen){
+  var an=sec.querySelector(".analysis"); if(!an)return;
+  var topics={},targets={},n=0,done={};
+  sec.querySelectorAll(".post-row").forEach(function(r){
+    if(r.dataset.label!=="relevant")return;
+    var k=r.dataset.itemType+":"+r.dataset.itemId; if(done[k])return; done[k]=1; n++;
+    var t=r.dataset.topic||PEND, tk=t.toLowerCase();
+    (topics[tk]=topics[tk]||{label:t,n:0}).n++;
+    var seenT={};
+    (r.dataset.targets||"").split("|").forEach(function(x){
+      if(!x||seenT[x.toLowerCase()])return; seenT[x.toLowerCase()]=1;
+      (targets[x.toLowerCase()]=targets[x.toLowerCase()]||{label:x,n:0}).n++;});
+  });
+  var c=an.dataset.color;
+  an.querySelector(".an-empty").hidden=n>0;
+  an.querySelector(".an-body").hidden=n===0;
+  an.querySelector(".an-n").textContent=n;
+  an.querySelector(".an-topics").innerHTML=barsHtml(topics,c,"No topics yet.");
+  an.querySelector(".an-targets").innerHTML=barsHtml(targets,c,"No targets named.");
+}
 function recount(){
   document.querySelectorAll("section.panel").forEach(function(sec){
     var btn=sec.querySelector(".dl-btn"); if(!btn)return;
@@ -71,12 +104,14 @@ function recount(){
     btn.querySelector(".dl-n").textContent=n;
     btn.querySelector(".dl-s").textContent=n===1?"":"s";
     if(n) btn.removeAttribute("aria-disabled"); else btn.setAttribute("aria-disabled","true");
+    analyse(sec,seen);
   });
 }
 document.addEventListener("click",function(e){
   var d=e.target.closest(".dl-btn");
   if(d&&d.getAttribute("aria-disabled")==="true"){e.preventDefault();return;}
 });
+recount();
 new MutationObserver(recount).observe(document.body,{subtree:true,attributes:true,attributeFilter:["data-label"]});
 })();
 (function(){
@@ -200,6 +235,15 @@ function load(){
     setTimeout(function(){map.invalidateSize();},50);
   }).catch(function(){document.getElementById("map-count").textContent="Could not load map markers.";});
 }
+var reloadTimer=null;
+new MutationObserver(function(){
+  clearTimeout(reloadTimer);
+  reloadTimer=setTimeout(function(){
+    fetch("/api/map",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(data){
+      cache.events=data.events||[]; cache.threats=data.threats||[]; renderEvents();
+    }).catch(function(){});
+  },900);
+}).observe(document.body,{subtree:true,attributes:true,attributeFilter:["data-label"]});
 document.querySelectorAll(".map-layer").forEach(function(b){
   b.addEventListener("click",function(){
     var on=b.getAttribute("aria-pressed")!=="true";
