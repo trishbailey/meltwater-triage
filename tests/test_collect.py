@@ -126,3 +126,9 @@ def test_x_runs_only_in_its_slot_while_other_sources_run_every_slot(tmp_path):
     out = c.collect(st, fetch=fetch, env=env, now=now.replace(hour=6), slot_hour=6)
     assert isinstance(out["x"], dict)
     assert c.since_time(now, 26) == datetime(2026, 11, 5, 18, tzinfo=timezone.utc)
+
+
+def test_bluesky_handle_gets_default_domain():
+    assert c.bluesky_identifier("trish") == "trish.bsky.social"
+    assert c.bluesky_identifier(" @trish.bsky.social ") == "trish.bsky.social"
+    assert c.bluesky_identifier("me.example.com") == "me.example.com"

@@ -126,10 +126,16 @@ def facebook_alerts(items: list[dict]) -> list[dict]:
     return out
 
 
+def bluesky_identifier(handle: str) -> str:
+    """Full Bluesky handle: strips @ and spaces, and adds .bsky.social when only the first part is given."""
+    h = (handle or "").strip().lstrip("@")
+    return h if ("." in h or "@" in h or h.startswith("did:")) else h + ".bsky.social"
+
+
 def bluesky_alerts(handle: str, password: str, queries=BLUESKY_QUERIES, fetch=_http,
                    now: datetime | None = None) -> list[dict]:
     session = fetch("https://bsky.social/xrpc/com.atproto.server.createSession",
-                    {"identifier": handle.strip().lstrip("@"), "password": password.strip()}, None, 30)
+                    {"identifier": bluesky_identifier(handle), "password": password.strip()}, None, 30)
     auth = {"Authorization": f"Bearer {session['accessJwt']}"}
     since = since_time(now).strftime("%Y-%m-%dT%H:%M:%SZ")
     out, seen = [], set()
