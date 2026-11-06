@@ -76,6 +76,10 @@ def _safe_next(target: str | None) -> str:
     return target
 
 
+def _review_on() -> bool:
+    return bool(os.environ.get("ANTHROPIC_API_KEY")) and os.environ.get("REFINE_DISABLED") != "1"
+
+
 try:
     from triage.feedback import NOT_RELEVANT_REASONS as _NR_REASONS, RELEVANT_REASONS as _R_REASONS
 except Exception:  # noqa: BLE001
@@ -260,7 +264,8 @@ def create_app() -> Flask:
             reasons = {}
         return render_template("dashboard.html", **dash.build(raw, _labels_with_inheritance(raw),
                                                               storage_ready=st is not None, reasons=reasons),
-                               not_relevant_reasons=_NR_REASONS, relevant_reasons=_R_REASONS)
+                               not_relevant_reasons=_NR_REASONS, relevant_reasons=_R_REASONS,
+                               review_on=_review_on())
 
     @app.get("/api/map")
     @require_password
@@ -523,10 +528,11 @@ def create_app() -> Flask:
         app.logger.warning("Could not backfill post sources")
 
     try:
-        from triage.collect import start_scheduler
+        from triage.collect import start_review_loop, start_scheduler
         st = _storage()
         if st is not None and not app.config.get("TESTING"):
             start_scheduler(st, app.logger)
+            start_review_loop(st, app.logger)
     except Exception:
         app.logger.warning("Could not start the collection scheduler")
 

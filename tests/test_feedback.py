@@ -50,9 +50,9 @@ def test_reasons_saved_and_feed_the_prompt(client, tmp_path, monkeypatch):
     client.post("/api/relevance/reason", json={"items": items, "reason": ""})  # clear
     assert fb.reason_counts("not_relevant") == {}
     html = client.get("/dashboard").get_data(as_text=True)
-    assert "Advocacy or petition" not in html or "reason-row" in html
+    assert 'id="reason-pop"' in html and "Advocacy or petition" in html
 
 
 def test_reason_chips_are_in_the_page(client):
     html = client.get("/dashboard").get_data(as_text=True)
-    assert "reason-row" in html and "/api/relevance/reason" in html
+    assert 'id="reason-pop"' in html and "/api/relevance/reason" in html and "reason-row" not in html
