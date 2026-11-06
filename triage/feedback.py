@@ -196,6 +196,18 @@ def all_reasons() -> dict[tuple[str, str], dict]:
         return {}
 
 
+def inherited_keys() -> set[tuple[str, str]]:
+    """Items whose current label was copied from a similar judged post, not clicked by the analyst."""
+    if not persistence_enabled():
+        return set()
+    try:
+        with _eng().connect() as conn:
+            return {(t, i) for t, i in conn.execute(
+                select(labels.c.item_type, labels.c.item_id).where(labels.c.source == "inherited")).all()}
+    except Exception:
+        return set()
+
+
 def reason_counts(label: str = "not_relevant") -> dict[str, int]:
     """How often each reason was given for items currently carrying `label`."""
     labs = all_labels()

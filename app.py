@@ -260,10 +260,11 @@ def create_app() -> Flask:
         try:
             from triage import feedback as fb
             reasons = fb.all_reasons()
+            auto = fb.inherited_keys()
         except Exception:
-            reasons = {}
+            reasons, auto = {}, set()
         return render_template("dashboard.html", **dash.build(raw, _labels_with_inheritance(raw),
-                                                              storage_ready=st is not None, reasons=reasons),
+                                                              storage_ready=st is not None, reasons=reasons, auto=auto),
                                not_relevant_reasons=_NR_REASONS, relevant_reasons=_R_REASONS,
                                review_on=_review_on())
 

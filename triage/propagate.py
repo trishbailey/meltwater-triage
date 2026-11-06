@@ -36,7 +36,7 @@ def inherited(df: pd.DataFrame, labels: dict) -> dict[str, list[dict]]:
         for i in g:
             if keys[i] not in labels and keys[i][1] and not is_rejected(recs[i].get("is_genuine")):
                 out[label].append({"item_type": keys[i][0], "item_id": keys[i][1],
-                                   "source": str(recs[i].get("origin_source") or "auto")})
+                                   "source": "inherited"})
     return out
 
 
