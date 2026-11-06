@@ -40,7 +40,7 @@ NOT_RELEVANT_REASONS = {
     "commentary": "Commentary or news",
     "past_event": "Past event",
     "off_topic": "Not about AUKUS",
-    "joke": "Joke or hyperbole",
+    "joke": "Joke, hyperbole, or irony",
     "outside_australia": "Outside Australia",
     "other": "Other",
 }
