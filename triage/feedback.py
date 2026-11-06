@@ -61,6 +61,32 @@ def set_label(item_type: str, item_id: str, label: str, source: str | None = Non
     return {"item_type": item_type, "item_id": item_id, "label": label, "source": source}
 
 
+def set_labels(items: list[dict], label: str) -> int:
+    """Apply one label to many items (a group of similar posts). Returns how many were saved."""
+    if label not in LABELS:
+        raise ValueError("label must be relevant or not_relevant")
+    clean = []
+    for it in items[:500]:
+        t = str(it.get("item_type") or "")
+        if t not in ITEM_TYPES or not it.get("item_id"):
+            raise ValueError("each item needs item_type (post or alert) and item_id")
+        clean.append((t, str(it["item_id"])[:255], (str(it.get("source") or "")[:64] or None)))
+    if not persistence_enabled():
+        raise RuntimeError("storage is not configured")
+    now = _utc()
+    with _eng().begin() as conn:
+        for t, i, src in clean:
+            old = conn.execute(select(labels.c.id, labels.c.source).where(
+                labels.c.item_type == t, labels.c.item_id == i)).first()
+            if old:
+                conn.execute(labels.update().where(labels.c.id == old[0]).values(
+                    label=label, source=src or old[1], labeled_at=now))
+            else:
+                conn.execute(labels.insert().values(item_type=t, item_id=i, source=src,
+                                                    label=label, labeled_at=now))
+    return len(clean)
+
+
 def all_labels() -> dict[tuple[str, str], str]:
     if not persistence_enabled():
         return {}

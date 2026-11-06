@@ -137,7 +137,8 @@ def test_dashboard_view_has_threat_and_protest_sections():
     none = dash.build(_posts(), {})
     assert none["threats"]["topics"] == [] and none["threats"]["targets"] == []
     assert t["download"] == "/download/threats.xlsx" and p["download"] == "/download/protests.xlsx"
-    assert {c["handle"] for c in t["posts"]} == {"@bad"} and t["posts"][0]["platform"]
+    cards = [m for g in t["groups"] + t["pending_groups"] for m in g["members"]]
+    assert {c["handle"] for c in cards} == {"@bad"} and cards[0]["platform"]
     assert "engagement" not in t["topics"][0] and "engagement" not in t["targets"][0]
 
 
@@ -149,7 +150,7 @@ def test_dashboard_renders_with_data(client):
     st.save_run(rows_to_store(df, df), ["s.xlsx"], 4)
     login(client)
     html = client.get("/dashboard", headers=auth()).get_data(as_text=True)
-    for s in ("Threats", "Protests", "targets", "Flagged posts", "post-row",
+    for s in ("Threats", "Protests", "targets", "AI-reviewed posts", "post-row",
               "/download/threats.xlsx", "/download/protests.xlsx"):
         assert s in html
     assert "Top threat authors" not in html and "Top protest authors" not in html
@@ -206,3 +207,22 @@ def test_download_contains_only_posts_marked_relevant():
 def test_map_shows_only_relevant_posts(client):
     data = client.get("/api/map", headers=auth()).get_json()
     assert data["threats"] == [] and data["events"] == []
+
+
+def test_similar_posts_group_and_batch_label(client):
+    from triage import dashboard as dash
+    from triage.grouping import group_indices
+    t = ["Stop AUKUS now! Rally Sunday at Town Hall", "RT Stop AUKUS now! Rally Sunday at Town Hall http://x.co",
+         "Blockade planned at HMAS Stirling Friday"]
+    assert group_indices(t) == [[0, 1], [2]]
+    r = client.post("/api/relevance/batch", json={"items": [], "label": "relevant"}, headers=auth())
+    assert r.status_code == 400
+    r = client.post("/api/relevance/batch", json={"items": [{"item_type": "post", "item_id": "1"}],
+                                                  "label": "bogus"}, headers=auth())
+    assert r.status_code == 400
+
+
+def test_advocacy_status_no_longer_flags_protest():
+    from triage import filters
+    assert "Advocacy: inquiry/submission campaign" not in filters.PROTEST_FLAG_STATUSES
+    assert "Past event recap: review separately" not in filters.PROTEST_FLAG_STATUSES

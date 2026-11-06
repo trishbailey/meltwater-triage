@@ -264,8 +264,9 @@ def test_map_layers_and_grouping(monkeypatch):
     assert all("meltwater" not in (e.get("source") or "").lower() for e in mapped["events"])
     assert all(e["source"] for e in mapped["events"])
     ctx = dash.build(posts)
-    assert ctx["threats"]["count"] == 1 and ctx["protests"]["count"] == 2
-    assert all("meltwater" not in c["platform"].lower() for c in ctx["protests"]["posts"])
+    assert ctx["threats"]["count"] == 1 and ctx["protests"]["count"] == 1  # advocacy campaign is no longer flagged
+    cards = [m for g in ctx["protests"]["groups"] + ctx["protests"]["pending_groups"] for m in g["members"]]
+    assert cards and all("meltwater" not in c["platform"].lower() for c in cards)
 
 
 def test_large_screen_drops_unneeded_rows_but_counts_them(monkeypatch, tmp_path):

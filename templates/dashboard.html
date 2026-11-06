@@ -15,6 +15,25 @@
 <button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if plabel=='not_relevant' else 'false' }}">Not relevant</button>
 </div></div>
 {% endmacro %}
+{% macro group_card(g) %}
+{% if g.n == 1 %}{{ post_row(g.rep) }}{% else %}
+<div class="post-group">
+<div class="post group-head">
+<div class="post-text">
+<span class="src">{{ g.rep.platform or "Unknown platform" }}</span>
+<strong>{{ g.rep.handle or "Unknown user" }}</strong>
+<span class="note">{{ g.rep.date or "No date" }}</span>
+<span class="tag">{{ g.n }} similar posts{% if g.platforms|length > 1 %} on {{ g.platforms|join(", ") }}{% endif %}</span>
+<div class="ptext">{{ g.rep.text or g.rep.summary }}</div>
+</div>
+<div class="rel-btns grp-btns" role="group" aria-label="Relevance for all {{ g.n }} posts">
+<button type="button" class="btn" data-group-label="relevant">All {{ g.n }} relevant</button>
+<button type="button" class="btn" data-group-label="not_relevant">All {{ g.n }} not relevant</button>
+</div></div>
+<details class="group-members"><summary>Show the {{ g.n }} posts</summary>
+{% for post in g.members %}{{ post_row(post) }}{% endfor %}</details>
+</div>{% endif %}
+{% endmacro %}
 {% macro bars(items, color, empty) %}
 {% if items %}<div class="bars">{% for row in items %}
 <div class="bar"><div class="lab">{{ row.label }}</div><div class="track" style="display:flex;align-items:center">
@@ -28,10 +47,13 @@
 <div class="sec-head"><h2>{{ title }} <span class="note">{{ s.count }} post{{ "s" if s.count != 1 }}</span></h2>
 <a class="btn dl-btn" href="{{ s.download }}" download data-noun="{{ noun }}"{% if not s.relevant %} aria-disabled="true"{% endif %}>Download <span class="dl-n">{{ s.relevant }}</span> relevant {{ noun }} post<span class="dl-s">{{ "s" if s.relevant != 1 }}</span> (Excel)</a></div>
 {% if s.count %}
-<p class="note">{{ s.reviewed }} reviewed by AI{% if s.pending %}, {{ s.pending }} pre-sorted and waiting for review{% endif %}. Review the flagged posts below and mark each Relevant or Not relevant. The download contains only the posts marked Relevant, with the raw data and the AI analysis.</p>
-<details class="flagged" open><summary><strong>Flagged posts</strong> ({{ s.count }})</summary>
-<div class="body">{% for post in s.posts %}{{ post_row(post) }}{% endfor %}
-{% if s.more %}<p class="note">Showing the newest {{ s.posts|length }}. {{ s.more }} more are in the download.</p>{% endif %}</div></details>
+<p class="note">{{ s.reviewed }} reviewed by AI{% if s.pending %}, {{ s.pending }} pre-sorted and waiting for review{% endif %}. Similar posts are grouped: mark a group once to label every post in it, or open it to mark posts one by one. The download contains only the posts marked Relevant, with the raw data and the AI analysis.</p>
+<details class="flagged" open><summary><strong>AI-reviewed posts</strong> ({{ s.reviewed }} posts in {{ s.groups_total }} group{{ "s" if s.groups_total != 1 }})</summary>
+<div class="body">{% for g in s.groups %}{{ group_card(g) }}{% endfor %}
+{% if not s.groups %}<p class="note">No AI-reviewed posts yet.</p>{% endif %}</div></details>
+{% if s.pending %}<details class="flagged"><summary><strong>Waiting for AI review</strong> ({{ s.pending }} posts in {{ s.pending_groups_total }} group{{ "s" if s.pending_groups_total != 1 }})</summary>
+<div class="body">{% for g in s.pending_groups %}{{ group_card(g) }}{% endfor %}</div></details>{% endif %}
+{% if s.more %}<p class="note">Showing the newest groups. {{ s.more }} more posts are not listed.</p>{% endif %}
 <div class="analysis" data-color="{{ s.color }}">
 <p class="note an-empty"{% if s.relevant %} hidden{% endif %}>Topic and target analysis appears once you mark posts Relevant. It counts only those posts.</p>
 <div class="grid2 an-body"{% if not s.relevant %} hidden{% endif %}>

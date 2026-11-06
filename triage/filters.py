@@ -74,6 +74,10 @@ class Patterns:
 PROTEST_FLAG_STATUSES = {
     "Mobilization candidate: action/CTA plus date, time, or place",
     "Possible mobilization: missing date/time/place cue",
+}
+# "Past event recap" and "Advocacy: inquiry/submission campaign" are no longer flagged: they are
+# commentary and campaigns, not mobilization.
+DROPPED_PROTEST_STATUSES = {
     "Past event recap: review separately",
     "Advocacy: inquiry/submission campaign",
 }
