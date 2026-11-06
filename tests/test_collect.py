@@ -89,3 +89,17 @@ def test_x_calls_are_capped_per_day(tmp_path):
         c.collect(st, fetch=fetch, env=env, now=now)
     assert len(calls) == 4  # two runs of two searches; later runs are skipped
     assert c.collect(st, fetch=fetch, env=env, now=now)["x"].startswith("skipped: daily X call limit")
+
+
+def test_collect_once_runs_one_time_per_value(tmp_path, monkeypatch):
+    st = Storage(f"sqlite:///{tmp_path/'o.db'}")
+    ran = []
+    monkeypatch.setattr(c, "collect", lambda s: ran.append(1) or {})
+    monkeypatch.setattr(c, "review_backlog", lambda s: 0)
+    t = c.run_once_on_start(st, env={"COLLECT_ONCE": "2026-11-06"})
+    t.join(5)
+    assert ran == [1]
+    assert c.run_once_on_start(st, env={"COLLECT_ONCE": "2026-11-06"}) is None
+    assert c.run_once_on_start(st, env={}) is None
+    c.run_once_on_start(st, env={"COLLECT_ONCE": "next"}).join(5)
+    assert ran == [1, 1]

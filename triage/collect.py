@@ -228,6 +228,32 @@ def review_backlog(storage) -> int:
     return run_all(storage)
 
 
+def run_once_on_start(storage, logger=log, env=None):
+    """Run one collection and review when COLLECT_ONCE is set to a value not used before.
+
+    Set COLLECT_ONCE to any new string (for example a date) to trigger a pull at the next start;
+    the value is remembered, so restarts do not repeat it.
+    """
+    import threading
+    env = os.environ if env is None else env
+    tag = (env.get("COLLECT_ONCE") or "").strip()
+    if not tag or ("collect_once", tag) in storage.notified_keys():
+        return None
+    storage.mark_notified([("collect_once", tag)])
+
+    def work():
+        try:
+            result = collect(storage)
+            result["reviewed"] = review_backlog(storage)
+            logger.warning("collect-once result: %s", json.dumps(result, default=str)[:900])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("collect-once failed: %s: %s", type(exc).__name__, str(exc)[:200])
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    return t
+
+
 def _slot(now: datetime, hours: list[int]) -> str:
     """Identifier of the most recent scheduled slot at or before `now` (UTC)."""
     day = now.date()

@@ -529,10 +529,11 @@ def create_app() -> Flask:
         app.logger.warning("Could not backfill post sources")
 
     try:
-        from triage.collect import start_review_loop, start_scheduler
+        from triage.collect import run_once_on_start, start_review_loop, start_scheduler
         st = _storage()
         if st is not None and not app.config.get("TESTING"):
             start_scheduler(st, app.logger)
+            run_once_on_start(st, app.logger)
             start_review_loop(st, app.logger)
     except Exception:
         app.logger.warning("Could not start the collection scheduler")
