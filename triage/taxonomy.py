@@ -80,3 +80,9 @@ def canon_targets(raw: str) -> list[str]:
         if label:
             seen.setdefault(label.lower(), label)
     return list(seen.values())
+
+
+def targets_from_text(text: str) -> list[str]:
+    """Every target label whose rule matches the post text (used until Claude's analysis exists)."""
+    low = (text or "").lower()
+    return [label for label, pattern in _TARGET_RULES if re.search(pattern, low)]

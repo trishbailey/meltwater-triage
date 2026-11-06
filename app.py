@@ -229,12 +229,26 @@ def create_app() -> Flask:
         except Exception:
             return {}
 
+    def _labels_with_inheritance(raw) -> dict:
+        """Human judgments, plus the same judgment for new posts that match a judged cluster."""
+        labels = _labels()
+        if raw is None or not len(raw):
+            return labels
+        try:
+            from triage import feedback as fb
+            from triage import propagate
+            return propagate.apply(raw, labels, lambda items, label: fb.set_labels(items, label))
+        except Exception:
+            app.logger.warning("Label inheritance failed")
+            return labels
+
     @app.get("/dashboard")
     @require_password
     def dashboard():
         st = _storage()
         raw = unified.load(st) if st is not None else pd.DataFrame()
-        return render_template("dashboard.html", **dash.build(raw, _labels(), storage_ready=st is not None))
+        return render_template("dashboard.html", **dash.build(raw, _labels_with_inheritance(raw),
+                                                              storage_ready=st is not None))
 
     @app.get("/api/map")
     @require_password
@@ -244,7 +258,7 @@ def create_app() -> Flask:
         st = _storage()
         raw = unified.load(st) if st is not None else None
         if raw is not None and len(raw):
-            labels = _labels()  # the map shows only posts the analyst marked Relevant
+            labels = _labels_with_inheritance(raw)  # the map shows only posts marked Relevant
             raw = raw[[_is_relevant(r, labels) for r in raw.to_dict(orient="records")]]
         return build_map(raw, days=None)
 
@@ -258,7 +272,8 @@ def create_app() -> Flask:
             days = None
         from triage.excel_safe import write_sheets
         from triage.export import single_sheet
-        sheets = single_sheet(unified.load(st, days=days), kind, _labels(), relevant_only=True)
+        data = unified.load(st, days=days)
+        sheets = single_sheet(data, kind, _labels_with_inheritance(data), relevant_only=True)
         return _xlsx(write_sheets(sheets), prefix=f"{kind}_posts")
 
     @app.get("/download/threats.xlsx")
@@ -300,6 +315,37 @@ def create_app() -> Flask:
         return {"deleted": deleted}
 
 
+    def _kick_analysis():
+        """After a Relevant mark, analyze approved posts in the background (one worker at a time)."""
+        if app.config.get("TESTING") or not os.environ.get("ANTHROPIC_API_KEY"):
+            return
+        state = app.extensions.setdefault("analysis", {"running": False, "again": False})
+        if state["running"]:
+            state["again"] = True
+            return
+        st = _storage()
+        if st is None:
+            return
+        state["running"] = True
+
+        def work():
+            import time
+            from triage.stages import analyze_relevant
+            try:
+                while True:
+                    state["again"] = False
+                    time.sleep(20)  # let a burst of marks finish first
+                    try:
+                        analyze_relevant(st)
+                    except Exception:  # noqa: BLE001
+                        app.logger.warning("Analysis of approved posts failed")
+                    if not state["again"]:
+                        break
+            finally:
+                state["running"] = False
+
+        threading.Thread(target=work, daemon=True).start()
+
     @app.post("/api/relevance")
     def relevance_label():
         if not _same_origin_upload():
@@ -317,6 +363,8 @@ def create_app() -> Flask:
             return {"error": str(exc)}, 400
         except RuntimeError as exc:
             return {"error": str(exc)}, 503
+        if out.get("label") == "relevant":
+            _kick_analysis()
         return out
 
     @app.post("/api/relevance/batch")
@@ -334,6 +382,8 @@ def create_app() -> Flask:
             return {"error": str(exc)}, 400
         except RuntimeError as exc:
             return {"error": str(exc)}, 503
+        if body.get("label") == "relevant":
+            _kick_analysis()
         return {"saved": n, "label": body.get("label")}
 
     @app.post("/api/alerts")

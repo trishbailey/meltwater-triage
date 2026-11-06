@@ -99,7 +99,7 @@ function barsHtml(map,color,empty){
   return '<div class="bars">'+items.map(function(i){
     return '<div class="bar"><div class="lab">'+esc(i.label)+'</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:'+(Math.round(1000*i.n/top)/10)+'%;background:'+color+'"></div><span class="val">'+i.n+' post'+(i.n===1?'':'s')+'</span></div></div>';}).join("")+'</div>';
 }
-var PEND="Not yet reviewed";
+var PEND="Analysis pending";
 function analyse(sec,seen){
   var an=sec.querySelector(".analysis"); if(!an)return;
   var topics={},targets={},n=0,done={};

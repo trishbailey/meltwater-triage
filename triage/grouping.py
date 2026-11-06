@@ -10,6 +10,7 @@ _RT = re.compile(r"^\s*rt\s+", re.I)
 _WORD = re.compile(r"[a-z0-9']+")
 THRESHOLD = 0.6
 SHINGLE = 3
+TOKEN_THRESHOLD = 0.8
 
 
 def normalize(text: str) -> list[str]:
@@ -23,6 +24,14 @@ def _shingles(tokens: list[str]) -> frozenset:
     if len(tokens) < SHINGLE:
         return frozenset([" ".join(tokens)]) if tokens else frozenset()
     return frozenset(" ".join(tokens[i:i + SHINGLE]) for i in range(len(tokens) - SHINGLE + 1))
+
+
+def _token_overlap(a: list[str], b: list[str]) -> float:
+    """Jaccard of the word sets; catches a reworded or lightly edited copy of the same post."""
+    sa, sb = set(a), set(b)
+    if min(len(sa), len(sb)) < 5:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
 
 
 def group_indices(texts: list[str], links: list[str] | None = None) -> list[list[int]]:
@@ -61,7 +70,7 @@ def group_indices(texts: list[str], links: list[str] | None = None) -> list[list
                 if toks[i] == toks[j]:
                     union(i, j)
                 continue
-            if shared / (len(s) + len(sets[j]) - shared) >= THRESHOLD:
+            if shared / (len(s) + len(sets[j]) - shared) >= THRESHOLD or _token_overlap(toks[i], toks[j]) >= TOKEN_THRESHOLD:
                 union(i, j)
         for sh in s:
             index[sh].append(i)
