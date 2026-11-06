@@ -50,9 +50,9 @@ PETITION_PATTERN = re.compile(
     r"\bpetition\b|\badd your (?:name|signature)\b|\bsign (?:the|our|this|my|your|now|here|up|on)\b", re.I)
 PHYSICAL_PROTEST_PATTERN = re.compile(
     r"\b(?:rall(?:y|ies|ying)|march(?:es|ing)?|blockad\w*|demonstrat\w*|picket\w*|vigil|sit-?in|occupation|occupy|"
-    r"assemble|gather(?:ing)?|take to the streets|meet (?:at|outside)|in the streets)\b", re.I)
+    r"assemble|gather(?:ing)?\s+(?:at|outside|in front|on)|take to the streets|meet (?:at|outside)|in the streets)\b", re.I)
 INFORMATIONAL_PATTERN = re.compile(
-    r"\b(?:see|read|download|view)\b[^.!?]{0,40}\b(?:report|inquiry|submission|article|here)\b|"
+    r"\b(?:see|read|download|view)\b[^.!?]{0,40}\b(?:report|inquiry|enquiry|submission|article|here)\b|"
     r"\b(?:report|inquiry|forum|submission)\b", re.I)
 
 
