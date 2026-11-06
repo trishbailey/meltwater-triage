@@ -55,7 +55,7 @@ _THREAT_GENUINE = ("\"is_genuine\": bool (true only for violence, sabotage, inti
 _PROTEST_GENUINE = ("\"is_genuine\": bool (true only when the post announces or calls for a specific "
                     "rally, march, blockade, or direct action, or reports one from the last week, and gives at "
                     "least one of a date, a place, or an organizer. false for petitions, submissions to "
-                    "inquiries, opinion, news commentary, general opposition to AUKUS, reshares with no new "
+                    "inquiries, petitions or any call to sign or add your name, opinion, news commentary, general opposition to AUKUS, reshares with no new "
                     "detail, and recaps of events older than a week)")
 _THREAT_FILTER = "\"id\": int, " + _THREAT_GENUINE
 _PROTEST_FILTER = "\"id\": int, " + _PROTEST_GENUINE
@@ -343,6 +343,10 @@ def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None =
     records = out.to_dict(orient="records")
     results: dict[int, dict] = {}
     tip = few_shot_block() if examples is None else examples
+    from .rules import prompt_text
+    standing = prompt_text()
+    if standing:
+        tip = "Standing rules set by the analyst:\n" + standing + (("\n\n" + tip) if tip else "")
     by_kind: dict[str, list[int]] = {}
     for i, rec in enumerate(records):
         by_kind.setdefault(_kind_of(rec.get("category")), []).append(i)

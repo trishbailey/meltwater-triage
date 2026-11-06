@@ -246,7 +246,12 @@ def create_app() -> Flask:
             return labels
         try:
             from triage import feedback as fb
-            from triage import propagate
+            from triage import propagate, rules
+
+            def save_rule(items, reason):
+                fb.set_labels(items, "not_relevant")
+                fb.set_reasons(items, reason)
+            labels = rules.apply(raw, labels, save_rule)
             return propagate.apply(raw, labels, lambda items, label: fb.set_labels(items, label))
         except Exception:
             app.logger.warning("Label inheritance failed")
@@ -260,9 +265,9 @@ def create_app() -> Flask:
         try:
             from triage import feedback as fb
             reasons = fb.all_reasons()
-            auto = fb.inherited_keys()
+            auto = fb.auto_keys()
         except Exception:
-            reasons, auto = {}, set()
+            reasons, auto = {}, {}
         return render_template("dashboard.html", **dash.build(raw, _labels_with_inheritance(raw),
                                                               storage_ready=st is not None, reasons=reasons, auto=auto),
                                not_relevant_reasons=_NR_REASONS, relevant_reasons=_R_REASONS,
@@ -333,36 +338,35 @@ def create_app() -> Flask:
         return {"deleted": deleted}
 
 
-    def _kick_analysis():
-        """After a Relevant mark, analyze approved posts in the background (one worker at a time)."""
-        if app.config.get("TESTING") or not os.environ.get("ANTHROPIC_API_KEY"):
-            return
-        state = app.extensions.setdefault("analysis", {"running": False, "again": False})
-        if state["running"]:
-            state["again"] = True
-            return
+    @app.route("/api/analyze", methods=["GET", "POST"])
+    def analyze_relevant_posts():
+        """Run Claude's analysis on posts marked Relevant (started by the Analyze with Claude button)."""
+        state = app.extensions.setdefault("analyze", {"running": False, "last": None})
+        if request.method == "GET":
+            return {"running": state["running"], "last": state["last"]}
+        if not _same_origin_upload():
+            return {"error": "Blocked: submit from this site."}, 403
+        if not _review_on():
+            return {"error": "Claude analysis is off: ANTHROPIC_API_KEY is not set."}, 503
         st = _storage()
         if st is None:
-            return
-        state["running"] = True
+            return {"error": "storage is not configured"}, 503
+        if state["running"]:
+            return {"status": "already running"}, 202
 
         def work():
-            import time
             from triage.stages import analyze_relevant
             try:
-                while True:
-                    state["again"] = False
-                    time.sleep(20)  # let a burst of marks finish first
-                    try:
-                        analyze_relevant(st)
-                    except Exception:  # noqa: BLE001
-                        app.logger.warning("Analysis of approved posts failed")
-                    if not state["again"]:
-                        break
+                state["last"] = {"at": datetime.now(timezone.utc).isoformat(), "analyzed": analyze_relevant(st)}
+            except Exception as exc:  # noqa: BLE001
+                app.logger.warning("Analysis failed: %s", type(exc).__name__)
+                state["last"] = {"at": datetime.now(timezone.utc).isoformat(), "error": type(exc).__name__}
             finally:
                 state["running"] = False
 
+        state["running"] = True
         threading.Thread(target=work, daemon=True).start()
+        return {"status": "started"}, 202
 
     @app.post("/api/relevance")
     def relevance_label():
@@ -381,8 +385,6 @@ def create_app() -> Flask:
             return {"error": str(exc)}, 400
         except RuntimeError as exc:
             return {"error": str(exc)}, 503
-        if out.get("label") == "relevant":
-            _kick_analysis()
         return out
 
     @app.post("/api/relevance/batch")
@@ -400,8 +402,6 @@ def create_app() -> Flask:
             return {"error": str(exc)}, 400
         except RuntimeError as exc:
             return {"error": str(exc)}, 503
-        if body.get("label") == "relevant":
-            _kick_analysis()
         return {"saved": n, "label": body.get("label")}
 
     @app.post("/api/relevance/reason")

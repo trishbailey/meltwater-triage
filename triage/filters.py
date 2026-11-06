@@ -46,6 +46,32 @@ ADDRESS_PATTERN = re.compile(
 PLACE_PATTERN = re.compile(r"\b(?:outside|at|meet at|assemble at|gather at)\s+[A-Z][^.!?]{2,60}")
 
 
+PETITION_PATTERN = re.compile(
+    r"\bpetition\b|\badd your (?:name|signature)\b|\bsign (?:the|our|this|my|your|now|here|up|on)\b", re.I)
+PHYSICAL_PROTEST_PATTERN = re.compile(
+    r"\b(?:rall(?:y|ies|ying)|march(?:es|ing)?|blockad\w*|demonstrat\w*|picket\w*|vigil|sit-?in|occupation|occupy|"
+    r"assemble|gather(?:ing)?|take to the streets|meet (?:at|outside)|in the streets)\b", re.I)
+INFORMATIONAL_PATTERN = re.compile(
+    r"\b(?:see|read|download|view)\b[^.!?]{0,40}\b(?:report|inquiry|submission|article|here)\b|"
+    r"\b(?:report|inquiry|forum|submission)\b", re.I)
+
+
+def is_informational(text: str) -> bool:
+    """Sharing a report/article/forum with no physical protest language is commentary, not a protest."""
+    t = text or ""
+    return bool(INFORMATIONAL_PATTERN.search(t) and not PHYSICAL_PROTEST_PATTERN.search(t)
+                and not DISRUPTION_HINT.search(t))
+
+
+DISRUPTION_HINT = re.compile(r"\b(?:blockad\w*|disrupt\w*|shut ?down|stop the|block)\b", re.I)
+
+
+def is_petition_only(text: str) -> bool:
+    """A petition call ("sign the petition", "add your name") with no physical protest language."""
+    t = text or ""
+    return bool(PETITION_PATTERN.search(t) and not PHYSICAL_PROTEST_PATTERN.search(t))
+
+
 class Patterns:
     """Compiled patterns; rebuilt from the keywords module on creation."""
 
@@ -80,6 +106,8 @@ PROTEST_FLAG_STATUSES = {
 DROPPED_PROTEST_STATUSES = {
     "Past event recap: review separately",
     "Advocacy: inquiry/submission campaign",
+    "Exclude: petition without protest language",
+    "Exclude: informational/commentary, no protest language",
 }
 
 
@@ -147,17 +175,22 @@ def screen_text(text: str, p: Patterns) -> dict:
     has_dtp = bool(dates or times or has_place)
     past_only = bool(m["past"] and not m["future"])
 
-    if m["union"] and not m["defense"]:
+    if is_petition_only(text):
+        status = "Exclude: petition without protest language"
+    elif is_informational(text) and not m["disruption"]:
+        status = "Exclude: informational/commentary, no protest language"
+    elif m["union"] and not m["defense"]:
         status = "Exclude: union action without AUKUS/defense context"
     elif m["inquiry"] and not action_or_cta:
         status = "Advocacy: inquiry/submission campaign"
     elif action_or_cta and has_dtp:
         status = ("Past event recap: review separately" if past_only
                   else "Mobilization candidate: action/CTA plus date, time, or place")
-    elif action_or_cta or m["organizer"] or m["hashtag"]:
+    elif action_or_cta:
         status = ("Past event recap: review separately" if past_only
                   else "Possible mobilization: missing date/time/place cue")
     else:
+        # Organizer names or hashtags alone (#auspol, #ENDAUKUS) are commentary, not a protest signal.
         status = "No mobilization signal"
     is_protest = status in PROTEST_FLAG_STATUSES
 

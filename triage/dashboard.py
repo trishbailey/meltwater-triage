@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .filters import DROPPED_PROTEST_STATUSES
+from .filters import DROPPED_PROTEST_STATUSES, is_petition_only
 from .grouping import group_indices
 from .export import (PROTEST_CATS, THREAT_CATS, author_handle, is_rejected, post_text)
 from .origin import origin_label
@@ -68,7 +68,7 @@ def _when(rec: dict):
     return None
 
 
-def _view(df: pd.DataFrame, labels: dict, reasons: dict | None = None, auto: set | None = None) -> list[dict]:
+def _view(df: pd.DataFrame, labels: dict, reasons: dict | None = None, auto: dict | None = None) -> list[dict]:
     """One flat record per post: only what the page shows."""
     out = []
     for rec in df.to_dict(orient="records"):
@@ -76,6 +76,8 @@ def _view(df: pd.DataFrame, labels: dict, reasons: dict | None = None, auto: set
             continue
         if _s(rec.get("category")) == "protest" and _s(rec.get("mobilization_status")) in DROPPED_PROTEST_STATUSES:
             continue  # advocacy campaigns and past-event recaps are not flagged any more
+        if _s(rec.get("category")) == "protest" and is_petition_only(post_text(rec)):
+            continue  # a petition is not a physical protest
         kind = _s(rec.get("item_type")) or "post"
         item_id = _s(rec.get("item_id")) or _s(rec.get("document_id")) or _s(rec.get("Document ID"))
         when = _when(rec)
@@ -94,7 +96,7 @@ def _view(df: pd.DataFrame, labels: dict, reasons: dict | None = None, auto: set
             "targets": _s(rec.get("targets")), "protest_topic": _s(rec.get("protest_topic")),
             "summary": _s(rec.get("narrative_summary")), "reviewed": reviewed,
             "label": labels.get((kind, item_id), ""),
-            "auto": (kind, item_id) in (auto or set()),
+            "auto": (auto or {}).get((kind, item_id), ""),
             "reason": (reasons or {}).get((kind, item_id), {}).get("reason", ""),
             "note": (reasons or {}).get((kind, item_id), {}).get("note", ""),
         })
@@ -192,7 +194,7 @@ def _section(rows: list[dict], kind: str) -> dict:
 
 
 def build(raw: pd.DataFrame | None, labels: dict | None = None, storage_ready: bool = True,
-          reasons: dict | None = None, auto: set | None = None) -> dict:
+          reasons: dict | None = None, auto: dict | None = None) -> dict:
     from . import geo
     labels = labels or {}
     ctx: dict = {"colors": COLORS, "window_label": "since " + unified.start().strftime("%B %-d"), "storage_ready": storage_ready,
