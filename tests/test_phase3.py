@@ -235,3 +235,9 @@ def test_window_starts_nov_1():
     far = datetime(2027, 3, 1, tzinfo=timezone.utc)
     assert unified.cutoff(None, now=far) == datetime(2026, 11, 1, tzinfo=timezone.utc)
     assert unified.cutoff(7, now=far) == datetime(2027, 2, 22, tzinfo=timezone.utc)
+
+
+def test_hidden_items_really_hide_and_rows_have_padding(client):
+    html = client.get("/dashboard", headers=auth()).get_data(as_text=True)
+    assert "[hidden]{display:none!important}" in html
+    assert ".post-row{padding:8px 10px" in html

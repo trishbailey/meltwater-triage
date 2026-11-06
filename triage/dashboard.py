@@ -68,7 +68,7 @@ def _when(rec: dict):
     return None
 
 
-def _view(df: pd.DataFrame, labels: dict, reasons: dict | None = None) -> list[dict]:
+def _view(df: pd.DataFrame, labels: dict, reasons: dict | None = None, auto: set | None = None) -> list[dict]:
     """One flat record per post: only what the page shows."""
     out = []
     for rec in df.to_dict(orient="records"):
@@ -94,6 +94,7 @@ def _view(df: pd.DataFrame, labels: dict, reasons: dict | None = None) -> list[d
             "targets": _s(rec.get("targets")), "protest_topic": _s(rec.get("protest_topic")),
             "summary": _s(rec.get("narrative_summary")), "reviewed": reviewed,
             "label": labels.get((kind, item_id), ""),
+            "auto": (kind, item_id) in (auto or set()),
             "reason": (reasons or {}).get((kind, item_id), {}).get("reason", ""),
             "note": (reasons or {}).get((kind, item_id), {}).get("note", ""),
         })
@@ -143,7 +144,7 @@ def _targets(r: dict) -> list[str]:
 
 def _post_card(r: dict, kind: str) -> dict:
     card = {k: r[k] for k in ("item_type", "item_id", "platform", "handle", "date", "text", "link",
-                              "label", "summary", "reviewed", "reason", "note")}
+                              "label", "summary", "reviewed", "reason", "note", "auto")}
     # Used by the page to rebuild the analysis as the analyst marks posts.
     card["topic"] = _topic_label(r, kind)
     card["target_list"] = _targets(r)
@@ -191,7 +192,7 @@ def _section(rows: list[dict], kind: str) -> dict:
 
 
 def build(raw: pd.DataFrame | None, labels: dict | None = None, storage_ready: bool = True,
-          reasons: dict | None = None) -> dict:
+          reasons: dict | None = None, auto: set | None = None) -> dict:
     from . import geo
     labels = labels or {}
     ctx: dict = {"colors": COLORS, "window_label": "since " + unified.start().strftime("%B %-d"), "storage_ready": storage_ready,
@@ -204,7 +205,7 @@ def build(raw: pd.DataFrame | None, labels: dict | None = None, storage_ready: b
                              {"label": "Protests", "color": geo.EVENT_COLOR, "swatch": "fill"},
                          ]}}
     empty = raw is None or raw.empty or "category" not in raw.columns
-    rows = [] if empty else _view(raw, labels, reasons)
+    rows = [] if empty else _view(raw, labels, reasons, auto)
     threat = [r for r in rows if r["category"] in THREAT_CATS]
     protest = [r for r in rows if r["category"] in PROTEST_CATS]
     ctx["threats"] = _section(threat, "threat")

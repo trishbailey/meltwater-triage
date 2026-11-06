@@ -6,7 +6,7 @@
 <span class="src">{{ post.platform or "Unknown platform" }}</span>
 <strong>{{ post.handle or "Unknown user" }}</strong>
 <span class="note">{{ post.date or "No date" }}</span>
-{% if not post.reviewed %}<span class="tag">Pre-sorted</span>{% endif %}
+{% if not post.reviewed %}<span class="tag">Pre-sorted</span>{% endif %}{% if post.auto %}<span class="tag" title="Copied from a similar post you judged. Click Relevant or Not relevant to change it.">Auto-marked: similar to a post you judged</span>{% endif %}
 <div class="ptext">{{ post.text or post.summary }}</div>
 {% if post.link %}<a href="{{ post.link }}" rel="noopener noreferrer" target="_blank">Open post</a>{% endif %}
 </div>
