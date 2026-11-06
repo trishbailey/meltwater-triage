@@ -128,7 +128,7 @@ def facebook_alerts(items: list[dict]) -> list[dict]:
 def bluesky_alerts(handle: str, password: str, queries=BLUESKY_QUERIES, fetch=_http,
                    now: datetime | None = None) -> list[dict]:
     session = fetch("https://bsky.social/xrpc/com.atproto.server.createSession",
-                    {"identifier": handle, "password": password}, None, 30)
+                    {"identifier": handle.strip().lstrip("@"), "password": password.strip()}, None, 30)
     auth = {"Authorization": f"Bearer {session['accessJwt']}"}
     since = since_time(now).strftime("%Y-%m-%dT%H:%M:%SZ")
     out, seen = [], set()
