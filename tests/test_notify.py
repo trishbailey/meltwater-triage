@@ -18,7 +18,7 @@ def _store(tmp_path, n=2):
 def test_first_run_seeds_then_alerts_only_on_new_posts(tmp_path, monkeypatch):
     st = _store(tmp_path)
     sent = []
-    monkeypatch.setattr(notify, "_post_webhook", lambda url, text: sent.append(text))
+    monkeypatch.setattr(notify, "_post_webhook", lambda url, text, title="": sent.append(text))
     env = {"ALERT_WEBHOOK_URL": "https://hooks.example/x", "RENDER_EXTERNAL_URL": "https://app.example"}
     assert notify.announce(st, env) == {"seeded": 2} and sent == []
     assert notify.announce(st, env) == {"new": 0}
@@ -66,3 +66,13 @@ def test_run_all_does_not_overlap(tmp_path):
         assert stages.run_all(st) == {"skipped": "another run is in progress"}
     finally:
         stages._RUN_LOCK.release()
+
+
+def test_teams_gets_an_adaptive_card_and_slack_gets_text():
+    teams = "https://prod-12.westus.logic.azure.com:443/workflows/abc/triggers/manual/paths/invoke?sig=x"
+    p = notify.payload_for(teams, "line one\n\nhttps://app/dashboard", "AUKUS monitor: 2 protests ready for review")
+    assert p["type"] == "message" and p["attachments"][0]["contentType"].endswith("adaptive")
+    blocks = p["attachments"][0]["content"]["body"]
+    assert blocks[0]["text"].startswith("AUKUS monitor") and len(blocks) == 3
+    assert notify.is_teams("https://contoso.webhook.office.com/webhookb2/x")
+    assert notify.payload_for("https://hooks.slack.com/services/x", "hi") == {"text": "hi"}
