@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -236,7 +237,18 @@ def collect(storage, fetch=_http, env=None, now: datetime | None = None, slot_ho
             summary[name] = {"fetched": len(alerts), "new": new}
         except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as exc:
             log.exception("%s collection failed", name)
-            summary[name] = f"failed: {type(exc).__name__}: {str(exc)[:200]}"
+            detail = ""
+            if isinstance(exc, urllib.error.HTTPError):
+                try:
+                    detail = " body=" + exc.read().decode("utf-8", "replace")[:300]
+                except Exception:  # noqa: BLE001
+                    detail = ""
+            if name == "bluesky":
+                h, pw = env.get("BLUESKY_HANDLE", ""), env.get("BLUESKY_APP_PASSWORD", "")
+                shape = bool(re.fullmatch(r"[a-z0-9]{4}(-[a-z0-9]{4}){3}", pw.strip()))
+                detail += (f" [handle_len={len(h.strip())} has_at={h.strip().startswith('@')} "
+                           f"has_dot={'.' in h} app_password_shape_ok={shape} pw_len={len(pw.strip())}]")
+            summary[name] = f"failed: {type(exc).__name__}: {str(exc)[:200]}{detail}"
     return summary
 
 
