@@ -48,8 +48,20 @@ def review_alerts(storage, complete=None) -> int:
     return storage.merge_alert_reviews(out) if out else 0
 
 
+_ANALYZE_LOCK = threading.Lock()
+
+
 def analyze_relevant(storage, complete=None) -> int:
-    """Run the analysis on posts and alerts marked Relevant that have no analysis yet."""
+    """Run the analysis on posts and alerts marked Relevant that have no analysis yet (one run at a time)."""
+    if not _ANALYZE_LOCK.acquire(blocking=False):
+        return 0
+    try:
+        return _analyze_relevant(storage, complete)
+    finally:
+        _ANALYZE_LOCK.release()
+
+
+def _analyze_relevant(storage, complete=None) -> int:
     from . import feedback as fb
     from .refine import is_enabled, refine
     if complete is None and not is_enabled():
@@ -108,6 +120,11 @@ def _run_all(storage, complete, notify, backfill_flagged) -> dict:
         except Exception as exc:  # noqa: BLE001
             log.warning("%s failed: %s", name, type(exc).__name__)
             out[name] = f"failed: {type(exc).__name__}"
+    try:  # posts the analyst marked Relevant get their analysis without a button press
+        out["analyzed"] = analyze_relevant(storage, complete=complete)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("analysis step failed: %s", type(exc).__name__)
+        out["analyzed"] = f"failed: {type(exc).__name__}"
     if notify:
         try:
             from .notify import announce
