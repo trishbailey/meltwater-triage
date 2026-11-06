@@ -303,8 +303,16 @@ new MutationObserver(function(){
     fetch("/api/map",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(data){
       cache.events=data.events||[]; cache.threats=data.threats||[]; cache.stats=data.stats||{}; renderEvents();
     }).catch(function(){});
-  },900);
+  },250);
 }).observe(document.body,{subtree:true,attributes:true,attributeFilter:["data-label"]});
+document.addEventListener("labels-saved",function(){
+  clearTimeout(reloadTimer);
+  reloadTimer=setTimeout(function(){
+    fetch("/api/map",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(data){
+      cache.events=data.events||[]; cache.threats=data.threats||[]; cache.stats=data.stats||{}; renderEvents();
+    }).catch(function(){});
+  },150);
+});
 document.querySelectorAll(".map-layer").forEach(function(b){
   b.addEventListener("click",function(){
     var on=b.getAttribute("aria-pressed")!=="true";
