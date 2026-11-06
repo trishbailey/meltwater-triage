@@ -170,8 +170,14 @@ def screen_text(text: str, p: Patterns) -> dict:
     times = TIME_PATTERN.findall(text)
     addresses = ADDRESS_PATTERN.findall(text)
 
-    action_or_cta = bool(m["action"] or m["cta"] or m["disruption"])
-    has_place = bool(m["logistics"] or addresses or _place_match(text, p.weak_protest, action_or_cta))
+    # A protest needs a concrete mobilization term (rally, march, blockade...). Weak action/CTA words
+    # such as "forum" or "inquiry" in commentary do not qualify on their own.
+    concrete = bool(m["disruption"] or PHYSICAL_PROTEST_PATTERN.search(text) or DISRUPTION_HINT.search(text))
+    raw_action = bool(m["action"] or m["cta"] or m["disruption"])
+    action_or_cta = raw_action and concrete
+    has_place = bool(m["logistics"] or addresses or _place_match(text, p.weak_protest, raw_action))
+    if raw_action and not concrete and m["cta"] and has_place:
+        action_or_cta = True  # e.g. "Join us outside Parliament House"
     has_dtp = bool(dates or times or has_place)
     past_only = bool(m["past"] and not m["future"])
 
