@@ -43,9 +43,12 @@
 {% endmacro %}
 
 <h1>Threat and Protest Monitor</h1>
-<p class="intro">Last {{ window_days }} days. Meltwater and Seerist posts are combined. The map and the analysis show only posts you have marked Relevant. Use <strong>Add data</strong> to upload an export.</p>
+<p class="intro">Last {{ window_days }} days. Meltwater and Seerist posts are combined. The analysis and the map (at the bottom) show only posts you have marked Relevant. Use <strong>Add data</strong> to upload an export.</p>
 {% if not storage_ready %}<p class="err">Storage is not configured (DATABASE_URL is not set), so there is nothing to show.</p>{% endif %}
 <p class="note"><label><input type="checkbox" id="show-hidden"> Show items marked not relevant</label></p>
+
+{{ section(threats, "Threats", "threats", "threat") }}
+{{ section(protests, "Protests", "protests", "protest") }}
 
 <section class="panel" id="map-panel"><h2>Map <span class="note">relevant posts only</span></h2>
 <div class="map-filters" role="group" aria-label="Map layers">
@@ -256,6 +259,4 @@ load();
 </script>
 
 
-{{ section(threats, "Threats", "threats", "threat") }}
-{{ section(protests, "Protests", "protests", "protest") }}
 {% endblock %}
