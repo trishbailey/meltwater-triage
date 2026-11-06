@@ -33,7 +33,9 @@ def test_build_map_alert_location(monkeypatch):
         "received_at": pd.Timestamp("2026-11-01", tz="UTC"),
         "signal_level": "medium", "author": "x",
     }])
-    out = build_map(pd.DataFrame(), alerts, days=90)
+    alerts.at[0, "posted_at"] = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=1)
+    alerts.at[0, "received_at"] = alerts.at[0, "posted_at"]
+    out = build_map(pd.DataFrame(), alerts, days=30)
     assert out["events"] and out["events"][0]["place"] == "Canberra"
 
 
@@ -54,8 +56,12 @@ def test_dashboard_includes_map(client):
     assert "Natural Earth" in html and "tile.openstreetmap.org" in html
     assert "leaflet" in html.lower() and "OpenStreetMap" in html
     assert 'data-layer="threats"' in html and 'data-layer="past"' in html
-    assert 'data-layer="planned"' in html and 'data-layer="advocacy"' in html
-    assert html.count('aria-pressed="true"') >= 4
+    assert 'data-layer="planned"' in html and 'data-layer="advocacy"' not in html
+    assert 'data-days="90"' not in html and "Last 90 days" not in html
+    assert "last 30 days" in html.lower()
+    assert html.count('aria-pressed="true"') >= 3
+    forced = client.get("/api/map?days=90").get_json()
+    assert forced["days"] == 30
     data = client.get("/api/map?days=30").get_json()
     assert len(data["assets"]) == 16 and "threats" in data
     icons = {a["icon"] for a in data["assets"]}

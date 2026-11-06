@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from . import geo
-from .dashboard import PROTEST_CATS, SOURCE_LABELS, THREAT_CATS
+from .dashboard import SOURCE_LABELS
 from .origin import origin_label
 
 _DATE = re.compile(
@@ -82,17 +82,16 @@ def _s(value) -> str:
 
 
 def _event_kind(status: str, upcoming: bool, refined: str, text: str) -> str:
+    """Advocacy is not drawn. Only a past or planned protest marker is returned."""
     blob = f"{status} {refined} {text}".lower()
     if "advoc" in blob or any(word in blob for word in ("submission", "petition", "public comment", "have your say")):
-        return "advocacy"
+        return ""
     if upcoming:
         return "planned"
     return "past"
 
 
 def _color_for(kind: str) -> str:
-    if kind == "advocacy":
-        return geo.ADVOCACY_COLOR
     if kind == "planned":
         return geo.UPCOMING_COLOR
     if kind == "threat":
@@ -142,10 +141,13 @@ def build_map(posts: pd.DataFrame | None, alerts: pd.DataFrame | None,
             src = (r.get("source") or "").lower()
             source = SOURCE_LABELS.get(src) or origin_label({"url": r.get("url") or "", "source": src})
             kind = _event_kind("", upcoming, "", str(r.get("text") or ""))
+            if not kind:
+                continue
+            from .textnorm import usable_source_url
             for place in places:
                 add_event(origin="alert", place=place, when=event_when or when,
-                          source=source, url=r.get("url") or "", text=r.get("text") or "",
-                          kind=kind)
+                          source=source, url=usable_source_url(r.get("url") or ""),
+                          text=r.get("text") or "", kind=kind)
 
     if posts is not None and not posts.empty:
         df = posts.copy()
@@ -153,28 +155,36 @@ def build_map(posts: pd.DataFrame | None, alerts: pd.DataFrame | None,
             when = _aware(r.get("post_date"))
             nested = r.get("data") if isinstance(r.get("data"), dict) else {}
             data = {**nested, **{k: v for k, v in r.items() if k != "data" and _s(v)}}
-            cat = str(r.get("category") or data.get("category") or "")
             refined = str(r.get("refined_category") or data.get("refined_category") or "")
-            is_protest = cat in PROTEST_CATS or refined in PROTEST_CATS
-            is_threat = cat in THREAT_CATS or refined in THREAT_CATS
             event_date_raw = r.get("event_date") or data.get("event_date") or ""
             event_when = _aware(event_date_raw) if event_date_raw else _parse_date(str(event_date_raw))
             if event_when is None:
                 event_when = _parse_date(str(data.get("narrative_summary") or ""))
+            from .judgment import display_flags
+            from .textnorm import first_source_url, single_post_text
+            flags = display_flags(data)
+            is_protest = flags["protest"]
+            is_threat = flags["threat"]
+            body = single_post_text(data)
+            if flags["raw"].get("high_signal_protest") and flags["raw"].get("event_date"):
+                parsed = _parse_date(str(flags["raw"].get("event_date")))
+                if parsed:
+                    event_when = parsed
             upcoming = bool(is_protest and event_when and event_when.date() > now.date())
             if not upcoming and cutoff and when and when < cutoff:
                 continue
-            places = _split_places(r.get("protest_location") or data.get("protest_location"))
-            link = r.get("link") or data.get("URL") or data.get("url") or data.get("link") or ""
-            summary = _s(data.get("narrative_summary")) or _s(data.get("Hit Sentence")) or _s(data.get("hit sentence"))
+            places = _split_places(r.get("protest_location") or data.get("protest_location")
+                                   or flags["raw"].get("protest_location"))
+            link = first_source_url(data)
             source = origin_label({**data, "link": link, "source name": r.get("source_name"),
                                    "origin_source": data.get("origin_source") or r.get("source_name")})
             status = str(r.get("mobilization_status") or data.get("mobilization_status") or "")
             if is_protest:
-                kind = _event_kind(status, upcoming, refined, summary)
-                for place in places:
-                    add_event(origin="post", place=place, when=event_when or when,
-                              source=source, url=link, text=summary, kind=kind)
+                kind = _event_kind(status, upcoming, refined, body)
+                if kind:
+                    for place in places:
+                        add_event(origin="post", place=place, when=event_when or when,
+                                  source=source, url=link, text=body, kind=kind)
             if is_threat:
                 targets = _split_places(r.get("targets") or data.get("targets"))
                 for place in targets[:3]:
@@ -193,7 +203,7 @@ def build_map(posts: pd.DataFrame | None, alerts: pd.DataFrame | None,
                         "source": source,
                         "url": link,
                         "color": geo.THREAT_MAP_COLOR,
-                        "text": _s(summary)[:180],
+                        "text": _s(body)[:180],
                         "threat_type": str(r.get("threat_type") or data.get("threat_type") or ""),
                     })
 
@@ -208,7 +218,7 @@ def build_map(posts: pd.DataFrame | None, alerts: pd.DataFrame | None,
         "days": days,
         "colors": {
             "asset": geo.ASSET_COLOR, "past": geo.EVENT_COLOR,
-            "planned": geo.UPCOMING_COLOR, "advocacy": geo.ADVOCACY_COLOR,
+            "planned": geo.UPCOMING_COLOR,
             "threat": geo.THREAT_MAP_COLOR,
         },
         "bounds": {"south": geo.AU_SOUTH, "north": geo.AU_NORTH,
@@ -218,6 +228,5 @@ def build_map(posts: pd.DataFrame | None, alerts: pd.DataFrame | None,
             {"label": "Threats", "color": geo.THREAT_MAP_COLOR, "swatch": "fill"},
             {"label": "Past protests", "color": geo.EVENT_COLOR, "swatch": "fill"},
             {"label": "Planned protests", "color": geo.UPCOMING_COLOR, "swatch": "hollow"},
-            {"label": "Advocacy", "color": geo.ADVOCACY_COLOR, "swatch": "fill"},
         ],
     }

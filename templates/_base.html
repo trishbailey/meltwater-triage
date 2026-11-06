@@ -92,6 +92,8 @@ label{display:block;font-size:14px;margin:0 0 6px}
 .rel-btns .btn{min-height:40px;font-size:13px}
 .rel-btns .btn[aria-pressed=true]{border-color:var(--gold);background:var(--gold);color:#0b1526;font-weight:700}
 .item-hidden{opacity:.55;border-style:dashed}
+.post-body{white-space:pre-line;overflow-wrap:anywhere;margin:6px 0}
+details.clip[open] .clip-preview{display:none}
 .dl-list{list-style:none;padding:0;margin:0;font-size:13px}
 .dl-list li{margin:6px 0;word-break:break-word}
 
@@ -127,13 +129,7 @@ input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
 <label for="files">Export files</label>
 <input id="files" type="file" name="files" accept=".xlsx,.csv" multiple required>
 <p style="margin-top:10px"><button class="btn primary" type="submit">Screen posts</button></p></form>
-</div>
-<div class="card" id="recent-downloads"{% if not recent_downloads %} hidden{% endif %}>
-<h3>Recent Excel exports</h3>
-<p>Downloads from finished uploads (kept for 7 days).</p>
-<ul class="dl-list">{% for d in recent_downloads %}
-<li data-job="{{ d.id }}"><a href="/jobs/{{ d.id }}/download">{{ d.filenames or "Flagged posts" }}</a></li>
-{% endfor %}</ul>
+<p id="current-download" hidden></p>
 </div>
 <p><a href="/status">Usage and storage status</a></p>
 </aside>
@@ -147,7 +143,6 @@ input:focus,.btn:focus{outline:2px solid var(--gold);outline-offset:2px}
 b.addEventListener("click",function(){var open=document.body.classList.toggle("drawer-open");b.setAttribute("aria-expanded",open?"true":"false");});
 })();
 </script>
-<script src="{{ url_for('static', filename='recent-exports.js') }}"></script>
 {% include "_progress.html" %}
 <script>
 (function(){

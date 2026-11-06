@@ -240,9 +240,10 @@ def test_map_layers_and_grouping(monkeypatch):
     from triage import dashboard as dash
     from triage.mapdata import build_map
     future = (datetime.now(timezone.utc) + timedelta(days=10)).strftime("%Y-%m-%d")
+    posted = datetime.now(timezone.utc) - timedelta(days=2)
     posts = pd.DataFrame([
-        {"Document ID": "t1", "Date": "2026-11-01", "URL": "https://x.com/a/9",
-         "post_date": pd.Timestamp("2026-11-01", tz="UTC"), "post_month": "2026-11",
+        {"Document ID": "t1", "Date": posted.strftime("%Y-%m-%d"), "URL": "https://x.com/a/9",
+         "post_date": pd.Timestamp(posted), "post_month": posted.strftime("%Y-%m"),
          "category": "threat", "is_flagged": True, "threat_type": "violence",
          "targets": "Perth", "Engagement": 4, "Hit Sentence": "bomb the base",
          "is_genuine": True},
@@ -260,13 +261,14 @@ def test_map_layers_and_grouping(monkeypatch):
     ])
     mapped = build_map(posts, None, days=None)
     kinds = {e["kind"] for e in mapped["events"]}
-    assert "planned" in kinds and "advocacy" in kinds
+    assert "planned" in kinds and "advocacy" not in kinds
+    assert len(posts) == 3
     assert mapped["threats"] and mapped["threats"][0]["source"] != "Meltwater"
     assert all("meltwater" not in (e.get("source") or "").lower() for e in mapped["events"])
     assert all(e["source"] for e in mapped["events"])
     ctx = dash.build(posts, None, month="2026-11")
-    assert "threat_type" in ctx["threat_chart"]["grouping"]
-    assert "stored" in ctx["threat_chart"]["grouping"].lower()
+    assert "stated target" in ctx["threat_chart"]["grouping"].lower()
+    assert "unspecified target" not in " ".join(row["label"].lower() for row in ctx["threat_chart"]["rows"])
     assert ctx["upcoming"] and ctx["upcoming"][0]["place"] == "Perth"
     assert "meltwater" not in ctx["upcoming"][0]["source"].lower()
     assert ctx["narrative"]
@@ -430,11 +432,22 @@ def test_save_failed_job_resumes_without_paying_again(tmp_path, monkeypatch):
         time.sleep(0.05)
     assert jobs.get(jid)["state"] == "error"
     assert jobs.get(jid)["stage"] == jobs.SAVE_FAILED_STAGE
-    assert calls and first in calls[0]
+    assert any(first in c for c in calls) and any(second in c for c in calls)
     paid = list(calls)
     saved_ids = {row.get("document_id") for row in jobs.load_batches(jid)}
     assert saved_ids >= {"P1", "P2"}
     calls.clear()
+    from sqlalchemy import select
+    stored = None
+    for _ in range(40):
+        with jobs._eng().connect() as conn:
+            stored = conn.execute(
+                select(jobs.jobs_table.c.state, jobs.jobs_table.c.stage).where(jobs.jobs_table.c.id == jid)
+            ).first()
+        if stored and stored[0] == "error" and stored[1] == jobs.SAVE_FAILED_STAGE:
+            break
+        time.sleep(0.05)
+    assert stored and stored[0] == "error" and stored[1] == jobs.SAVE_FAILED_STAGE
     stats = jobs.resume_pending(lambda files: work)
     assert stats["resumed"] == 1
     for _ in range(80):

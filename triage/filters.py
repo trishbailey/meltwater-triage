@@ -69,13 +69,11 @@ class Patterns:
         self.defense = make_pattern(k.AUKUS_DEFENSE_CONTEXT)
 
 
-# Protest statuses that count as a protest flag (notebook keeps all but
-# "No mobilization signal"; we also drop the explicit "Exclude" status).
+# A protest flag needs an invitation or an action tied to a date or place.
+# Advocacy and past recaps stay described in mobilization_status and do not count.
 PROTEST_FLAG_STATUSES = {
     "Mobilization candidate: action/CTA plus date, time, or place",
     "Possible mobilization: missing date/time/place cue",
-    "Past event recap: review separately",
-    "Advocacy: inquiry/submission campaign",
 }
 
 
@@ -122,8 +120,15 @@ def _place_match(text: str, weak: set, has_strong_signal: bool) -> bool:
     return has_strong_signal or first not in weak
 
 
-def screen_text(text: str, p: Patterns) -> dict:
-    """Return threat/protest matches and mobilization status for one post."""
+def screen_text(text: str, p: Patterns | None = None, author: str = "") -> dict:
+    """Return threat/protest matches and mobilization status for one post.
+
+    Exact doubled text is collapsed first. Rules then drop sarcasm, third-party
+    descriptions, news digests, policy warnings, and advocacy.
+    """
+    from .textnorm import collapse_exact
+    p = p or Patterns()
+    text = collapse_exact(text or "")
     target_spans = [(mt.start(), mt.group(0)) for pat in (p.target, p.target_cs) if pat
                     for mt in pat.finditer(text)]
     target_terms = sorted({t for _, t in target_spans}, key=str.lower)
@@ -147,12 +152,12 @@ def screen_text(text: str, p: Patterns) -> dict:
         status = "Exclude: union action without AUKUS/defense context"
     elif m["inquiry"] and not action_or_cta:
         status = "Advocacy: inquiry/submission campaign"
-    elif action_or_cta and has_dtp:
-        status = ("Past event recap: review separately" if past_only
-                  else "Mobilization candidate: action/CTA plus date, time, or place")
-    elif action_or_cta or m["organizer"] or m["hashtag"]:
-        status = ("Past event recap: review separately" if past_only
-                  else "Possible mobilization: missing date/time/place cue")
+    elif action_or_cta and has_dtp and not past_only:
+        status = "Mobilization candidate: action/CTA plus date, time, or place"
+    elif m["cta"] and not past_only:
+        status = "Possible mobilization: missing date/time/place cue"
+    elif past_only and (action_or_cta or m["organizer"] or m["hashtag"]):
+        status = "Past event recap: review separately"
     else:
         status = "No mobilization signal"
     is_protest = status in PROTEST_FLAG_STATUSES
@@ -168,11 +173,15 @@ def screen_text(text: str, p: Patterns) -> dict:
         matched += [f"protest:{t}" for t in protest_terms]
 
     category = "both" if is_threat and is_protest else "threat" if is_threat else "protest" if is_protest else ""
-    return {
+    result = {
         "matched_keywords": "; ".join(matched),
         "category": category,
         "mobilization_status": status,
+        "protest_location": "",
+        "event_date": "",
     }
+    from .judgment import adjust
+    return adjust(text, result, author=author)
 
 
 def _find_columns(df: pd.DataFrame, options: list[str]) -> list:
@@ -217,8 +226,13 @@ def screen_dataframe(df: pd.DataFrame, p: Patterns | None = None) -> pd.DataFram
         if len(cols) > 300:
             cols = cols[:300] + "…"
         raise ValueError("No post-text column found. Available columns: " + cols)
-    text = df[text_cols].astype(object).fillna("").astype(str).agg(" ".join, axis=1).str.strip()
-    results = pd.DataFrame([screen_text(t, p) for t in text], index=df.index)
+    from .textnorm import _cell, _text, single_post_text
+    screened_rows = []
+    for _, row in df.iterrows():
+        rec = row.to_dict()
+        author = " ".join(_text(_cell(rec, name)) for name in ("author handle", "author name", "author"))
+        screened_rows.append(screen_text(single_post_text(rec, text_cols), p, author=author))
+    results = pd.DataFrame(screened_rows, index=df.index)
     out = coerce_numeric(df)
     link_cols = _find_columns(df, kw.LINK_COLUMN_OPTIONS)
     out["link"] = df[link_cols[0]] if link_cols else ""
@@ -233,7 +247,9 @@ def flag_posts(df: pd.DataFrame, p: Patterns | None = None, refine_fn=None) -> p
 
     screened = screen_dataframe(df, p)
     flagged = screened[screened["category"] != ""].reset_index(drop=True)
-    return refine_mod.refine(flagged, _find_columns(df, kw.TEXT_COLUMN_OPTIONS), complete=refine_fn)
+    flagged = refine_mod.refine(flagged, _find_columns(df, kw.TEXT_COLUMN_OPTIONS), complete=refine_fn)
+    from .judgment import apply_judgment_df
+    return apply_judgment_df(flagged, drop_cleared=True)
 
 
 def _row_limit_error() -> ValueError:

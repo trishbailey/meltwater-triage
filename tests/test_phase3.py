@@ -92,19 +92,28 @@ def test_delete_alert(client):
 
 
 def _posts():
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=40)).strftime("%Y-%m-%d")
+    d2 = (now - timedelta(days=3)).strftime("%Y-%m-%d")
+    d3 = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+    d4 = (now - timedelta(days=1)).strftime("%Y-%m-%d")
     return pd.DataFrame([
-        {"Document ID": "1", "Date": "2026-09-03", "URL": "https://x.com/a/status/1", "link": "https://x.com/a/status/1",
+        {"Document ID": "1", "Date": old, "URL": "https://x.com/a/status/1", "link": "https://x.com/a/status/1",
          "Author Handle": "@bad", "Author Name": "Bad", "Engagement": 50, "category": "threat", "is_flagged": True,
-         "is_genuine": True, "threat_type": "violence", "targets": "Base A", "heat_score": 8, "heat_topic": "military bases"},
-        {"Document ID": "2", "Date": "2026-10-03", "URL": "https://x.com/a/status/2", "link": "https://x.com/a/status/2",
+         "is_genuine": True, "threat_type": "violence", "targets": "Base A", "heat_score": 8, "heat_topic": "military bases",
+         "Hit Sentence": "I will bomb the AUKUS base at HMAS Stirling."},
+        {"Document ID": "2", "Date": d2, "URL": "https://x.com/a/status/2", "link": "https://x.com/a/status/2",
          "Author Handle": "@bad", "Author Name": "Bad", "Engagement": 10, "category": "threat", "is_flagged": True,
-         "is_genuine": True, "threat_type": "violence", "targets": "Base A; Minister B", "heat_score": 6, "heat_topic": "military bases"},
-        {"Document ID": "3", "Date": "2026-10-05", "URL": "https://x.com/c/status/3", "link": "https://x.com/c/status/3",
+         "is_genuine": True, "threat_type": "violence", "targets": "Base A; Minister B", "heat_score": 6, "heat_topic": "military bases",
+         "Hit Sentence": "We will attack HMAS Stirling next week."},
+        {"Document ID": "3", "Date": d3, "URL": "https://x.com/c/status/3", "link": "https://x.com/c/status/3",
          "Author Handle": "@bad", "Author Name": "Bad", "Engagement": 5, "category": "threat", "is_flagged": True,
-         "is_genuine": True, "threat_type": "doxxing", "targets": "Base A"},
-        {"Document ID": "4", "Date": "2026-10-06", "URL": "https://x.com/d/status/4", "link": "https://x.com/d/status/4",
+         "is_genuine": True, "threat_type": "doxxing", "targets": "Base A",
+         "Hit Sentence": "I will publish the home address of the defence minister."},
+        {"Document ID": "4", "Date": d4, "URL": "https://x.com/d/status/4", "link": "https://x.com/d/status/4",
          "Author Handle": "@org", "Author Name": "Org", "Engagement": 7, "category": "protest", "is_flagged": True,
-         "protest_location": "Perth", "protest_topic": "submarines", "organizers_or_groups": "Group C"},
+         "protest_location": "Perth", "protest_topic": "submarines", "organizers_or_groups": "Group C",
+         "Hit Sentence": "Join us for a rally in Perth this Saturday."},
     ])
 
 
@@ -122,9 +131,9 @@ def test_alerts_layer_is_separate_and_confirmed(tmp_path):
     assert confirmed["lead"] == "5.0 hours"
     # Meltwater totals unaffected by alerts
     assert ctx["headline"][0]["value"] == 2 and ctx["headline"][1]["value"] == 1
-    assert sum(v["threat"] + v["protest"] for v in ctx["volume"]) == 4
-    assert ctx["headline"][0]["delta"] == 1
-    assert ctx["posters"][0]["handle"] == "@bad" and len(ctx["posters"][0]["posts"]) == 2
+    assert "delta" not in ctx["headline"][0]
+    assert ctx["volume"] == []
+    assert ctx["posters"][0]["handle"] == "@bad" and ctx["posters"][0]["count"] == 2
     assert ctx["targets"][0]["label"] == "Base A"
     assert ctx["protest_locations"][0]["label"] == "Perth"
     assert ctx["heat"][0]["label"] == "Military bases"
@@ -137,12 +146,13 @@ def test_dashboard_renders_with_data(client):
     client.post("/api/alerts", json=ALERT, headers=bearer())
     login(client)
     html = client.get("/dashboard?month=2026-10", headers=auth()).get_data(as_text=True)
-    for s in ("Recurring threat posters", "Early warning", "Threat ranking", "Monthly trend",
-              "Upcoming protests", "post-row", "not added to the threat, protest, or monthly totals"):
+    for s in ("Recurring threat posters", "Early warning", "Threat ranking", "last 30 days",
+              "Upcoming protests", "post-row", "not added to the threat or protest totals"):
         assert s in html
+    assert "Monthly trend" not in html and "Last 90 days" not in html and "Advocacy" not in html
     assert "Trish" not in html and "google-analytics" not in html
     status = client.get("/status", headers=auth()).get_data(as_text=True)
-    assert "2026-10" in status
+    assert "rows" in status.lower() or "post" in status.lower()
 
 
 def test_palette_distinct():

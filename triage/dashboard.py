@@ -4,7 +4,7 @@ Alerts are a separate, source-tagged layer and never enter Meltwater totals.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -25,6 +25,8 @@ SIGNAL_COLORS = {"critical": "#ff4d3d", "high": "#e8705f", "medium": "#d99a8f", 
 THREAT_CATS = {"threat", "both"}
 PROTEST_CATS = {"protest", "both"}
 TOP_N = 5
+WINDOW_DAYS = 30
+_HIDE_TYPE = {"", "none", "unknown", "unspecified", "nan", "null", "call to protest"}
 
 
 def _col(df, name):
@@ -73,9 +75,13 @@ def _text(row, cols) -> str:
     return " ".join(str(row[c]) for c in cols if c and isinstance(row.get(c), str))[:400]
 
 
+def _window_start(now: datetime) -> datetime:
+    return now - timedelta(days=WINDOW_DAYS)
+
+
 def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
           meltwater_seen: dict | None = None, month: str | None = None,
-          map_days: int | None = 30) -> dict:
+          map_days: int | None = None, now: datetime | None = None) -> dict:
     ctx: dict = {"colors": COLORS, "source_colors": SOURCE_COLORS, "source_labels": SOURCE_LABELS,
                  "signal_colors": SIGNAL_COLORS, "has_data": not posts.empty}
     ctx["alerts"] = build_alerts(alerts, meltwater_seen or {})
@@ -92,123 +98,112 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
     ctx.setdefault("narrative", "")
     from . import geo
     ctx["land"] = geo.australia_land()
-    ctx["map"] = {"assets": geo.asset_markers(), "days": map_days,
+    ctx["window_days"] = WINDOW_DAYS
+    ctx["map"] = {"assets": geo.asset_markers(), "days": WINDOW_DAYS,
                  "colors": {"asset": geo.ASSET_COLOR, "past": geo.EVENT_COLOR,
-                            "planned": geo.UPCOMING_COLOR, "advocacy": geo.ADVOCACY_COLOR,
+                            "planned": geo.UPCOMING_COLOR,
                             "threat": geo.THREAT_MAP_COLOR},
                  "legend": [
                      {"label": "Sites", "color": geo.ASSET_COLOR, "swatch": "site"},
                      {"label": "Threats", "color": geo.THREAT_MAP_COLOR, "swatch": "fill"},
                      {"label": "Past protests", "color": geo.EVENT_COLOR, "swatch": "fill"},
                      {"label": "Planned protests", "color": geo.UPCOMING_COLOR, "swatch": "hollow"},
-                     {"label": "Advocacy", "color": geo.ADVOCACY_COLOR, "swatch": "fill"},
                  ]}
+    ctx["upcoming"] = _upcoming(posts, alerts, now=now)
     if posts.empty:
+        ctx["narrative"] = _narrative({"threats": 0, "protests": 0}, ctx["threat_chart"], ctx["upcoming"])
         return ctx
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    start = _window_start(moment)
+    from .filters import Patterns
+    from .judgment import display_flags, stated_targets
+    from .textnorm import row_datetime, storage_dedupe_key
+    patterns = Patterns()
     df = posts.copy()
     df["category"] = df.get("category", pd.Series("", index=df.index)).fillna("")
     df["eng"] = _num(df[_col(df, "engagement")]) if _col(df, "engagement") else 0
-    df["is_threat"] = df["category"].isin(THREAT_CATS)
-    df["is_protest"] = df["category"].isin(PROTEST_CATS)
-    genuine = df["is_genuine"] if "is_genuine" in df else pd.Series(None, index=df.index)
-    df["confirmed"] = genuine.map(lambda v: v is True or v == 1 or str(v).lower() == "true")
-    months = sorted(m for m in df["post_month"].dropna().unique())
-    if not months:
-        ctx["has_data"] = False
-        return ctx
-    cur = month if month in months else months[-1]
-    prev = months[months.index(cur) - 1] if months.index(cur) > 0 else None
-    ctx.update(months=[{"key": m, "label": _month_label(m)} for m in months], month=cur,
-               month_label=_month_label(cur), prev_label=_month_label(prev) if prev else None)
-
-    def stats(m):
-        d = df[df["post_month"] == m]
-        heat = pd.to_numeric(d.get("heat_score"), errors="coerce") if "heat_score" in d else pd.Series(dtype=float)
-        return {"threats": int(d["is_threat"].sum()),
-                "confirmed_threats": int((d["is_threat"] & d["confirmed"]).sum()),
-                "protests": int(d["is_protest"].sum()),
-                "confirmed_protests": int((d["is_protest"] & d["confirmed"]).sum()),
-                "avg_heat": round(float(heat.mean()), 1) if heat.notna().any() else None,
-                "heat_posts": int(heat.notna().sum())}
-
-    s_cur, s_prev = stats(cur), stats(prev) if prev else None
-
-    def delta(k):
-        if not s_prev or s_cur[k] is None or s_prev[k] is None:
-            return None
-        return round(s_cur[k] - s_prev[k], 1)
-
+    flags, in_window, bodies = [], [], []
+    seen_keys = set()
+    keep_duplicate = []
+    for _, row in df.iterrows():
+        rec = row.to_dict()
+        flagged = display_flags(rec, patterns)
+        flags.append(flagged)
+        when = row_datetime(rec)
+        in_window.append(when is not None and when >= start)
+        bodies.append(flagged.get("text") or "")
+        key = storage_dedupe_key(rec)
+        dup = bool(rec.get("duplicate_of")) or (key is not None and key in seen_keys)
+        if key is not None and not rec.get("duplicate_of"):
+            seen_keys.add(key)
+        keep_duplicate.append(dup)
+    df["_threat"] = [f["threat"] for f in flags]
+    df["_protest"] = [f["protest"] for f in flags]
+    df["_in_window"] = in_window
+    df["_dup"] = keep_duplicate
+    df["_body"] = bodies
+    df["_targets"] = [stated_targets(df.iloc[i].to_dict(), flags[i]["raw"]) for i in range(len(df))]
+    view = df[df["_in_window"] & ~df["_dup"]].copy()
+    ctx["stored_posts"] = int(len(df))
+    ctx["has_data"] = not view.empty
+    t = view[view["_threat"]]
+    p = view[view["_protest"]]
+    heat_src = view
+    heat = pd.to_numeric(heat_src.get("heat_score"), errors="coerce") if "heat_score" in heat_src else pd.Series(dtype=float)
+    s_cur = {"threats": int(len(t)), "protests": int(len(p)),
+             "confirmed_threats": int(t["is_genuine"].map(lambda v: v is True or str(v).lower() == "true").sum()) if "is_genuine" in t else 0,
+             "confirmed_protests": int(p["is_genuine"].map(lambda v: v is True or str(v).lower() == "true").sum()) if "is_genuine" in p else 0,
+             "avg_heat": round(float(heat.mean()), 1) if heat.notna().any() else None,
+             "heat_posts": int(heat.notna().sum())}
     ctx["headline"] = [
-        {"label": "Threat posts", "value": s_cur["threats"], "delta": delta("threats"), "color": COLORS["threat"]},
-        {"label": "Protest posts", "value": s_cur["protests"], "delta": delta("protests"), "color": COLORS["protest"]},
+        {"label": "Threat posts", "value": s_cur["threats"], "color": COLORS["threat"]},
+        {"label": "Protest posts", "value": s_cur["protests"], "color": COLORS["protest"]},
         {"label": "Average heat (0 to 10)", "value": s_cur["avg_heat"] if s_cur["avg_heat"] is not None else "n/a",
-         "delta": delta("avg_heat"), "color": "#e6e9ef"},
+         "color": "#e6e9ef"},
     ]
-
-    vol = []
-    for m in months:
-        d = df[df["post_month"] == m]
-        vol.append({"label": _month_label(m), "threat": int(d["is_threat"].sum()),
-                    "protest": int(d["is_protest"].sum())})
-    top = max([v["threat"] for v in vol] + [v["protest"] for v in vol] + [1])
-    for v in vol:
-        v["threat_pct"], v["protest_pct"] = round(100 * v["threat"] / top, 1), round(100 * v["protest"] / top, 1)
-    ctx["volume"] = vol
-
-    m = df[df["post_month"] == cur]
-    t = m[m["is_threat"]]
-    p = m[m["is_protest"]]
-    if "threat_type" in t and t["threat_type"].fillna("").ne("").any():
-        g = (t[t["threat_type"].fillna("").ne("") & t["threat_type"].ne("none")]
-             .groupby("threat_type").agg(value=("eng", "sum"), posts=("eng", "size")).reset_index()
-             .sort_values("value", ascending=False).head(TOP_N))
-        ctx["threat_types"] = _bars([{"label": r.threat_type.capitalize(), "value": int(r.value),
-                                      "posts": int(r.posts)} for r in g.itertuples()])
-    else:
-        ctx["threat_types"] = []
-    ctx["targets"] = _split_counts(t.get("targets", pd.Series(dtype=object)), t["eng"])
+    ctx["volume"] = []
+    ctx["threat_types"] = []
+    ctx["targets"] = _split_counts(t["_targets"].map(lambda xs: "; ".join(xs)) if not t.empty else pd.Series(dtype=object),
+                                   t["eng"] if not t.empty else pd.Series(dtype=float))
     ctx["threat_chart"] = build_threat_chart(t)
-    ctx["upcoming"] = _upcoming(df, alerts)
-    ctx["narrative"] = _narrative(s_cur, s_prev, ctx["threat_chart"], ctx["upcoming"])
-    ctx["people"] = _split_counts(m[m["is_threat"] | m["is_protest"]].get("named_individuals", pd.Series(dtype=object)), m["eng"])
-
-    posters = recurring_threat_posters(t, min_count=2) if not t.empty else pd.DataFrame()
-    text_cols = [_col(df, c) for c in ("hit sentence", "opening text", "title")]
-    from .origin import origin_label, publisher_label
-    sample = t.sort_values("eng", ascending=False).head(25) if not t.empty else t
-    ctx["flagged_sample"] = [{
-        "doc_id": r.get("document_id") or r.get("Document ID"),
-        "text": _text(r, text_cols),
-        "summary": r.get("narrative_summary"),
-        "type": r.get("threat_type"),
-        "link": r.get("link") or r.get("URL") or r.get("url"),
-        "author": r.get("author_handle") or r.get("author_name") or "",
-        "source": origin_label(r.to_dict()),
-        "publisher": publisher_label(r.to_dict()),
-    } for _, r in sample.iterrows()]
+    ctx["narrative"] = _narrative(s_cur, ctx["threat_chart"], ctx["upcoming"])
+    both = view[view["_threat"] | view["_protest"]]
+    ctx["people"] = _split_counts(both.get("named_individuals", pd.Series(dtype=object)), both["eng"]) if not both.empty else []
+    posters = recurring_threat_posters(t, min_count=2, respect_genuine=False) if not t.empty else pd.DataFrame()
+    ranked = t.sort_values("eng", ascending=False) if not t.empty else t
+    ctx["flagged_sample"] = [_present(row) for _, row in ranked.head(25).iterrows()]
     hc, nc = _col(t, "author handle"), _col(t, "author name")
     plist = []
     for r in posters.head(10).itertuples() if not posters.empty else []:
         key = (r.author_handle or r.author_name or "").lower()
-        mine = t[(t[hc].fillna("").str.lower() == key) | (t[nc].fillna("").str.lower() == key)] if hc and nc else t.iloc[0:0]
+        if hc and nc:
+            mine = t[(t[hc].fillna("").str.lower() == key) | (t[nc].fillna("").str.lower() == key)]
+        else:
+            mine = t.iloc[0:0]
+        seen_body = set()
+        posts_out = []
+        for _, row in mine.iterrows():
+            body = " ".join(str(row.get("_body") or "").split()).lower()
+            if body and body in seen_body:
+                continue
+            if body:
+                seen_body.add(body)
+            posts_out.append(_present(row))
+            if len(posts_out) >= 10:
+                break
         plist.append({"handle": r.author_handle, "name": r.author_name, "count": int(r.threat_posts),
                       "engagement": int(r.total_engagement),
                       "first": str(r.first_seen)[:10], "last": str(r.last_seen)[:10],
-                      "posts": [{"text": _text(row, text_cols), "link": row.get("link"),
-                                 "summary": row.get("narrative_summary"),
-                                 "type": row.get("threat_type"),
-                                 "source": origin_label(row.to_dict()),
-                                 "doc_id": row.get("document_id") or row.get("Document ID")}
-                                for _, row in mine.head(10).iterrows()]})
+                      "posts": posts_out})
     ctx["posters"] = plist
-
-    ctx["protest_locations"] = _split_counts(p.get("protest_location", pd.Series(dtype=object)), p["eng"])
-    ctx["protest_topics"] = _split_counts(p.get("protest_topic", pd.Series(dtype=object)), p["eng"])
-    ctx["organizers"] = _split_counts(p.get("organizers_or_groups", pd.Series(dtype=object)), p["eng"])
-
-    heat = m[pd.to_numeric(m.get("heat_score"), errors="coerce").notna()] if "heat_score" in m else m.iloc[0:0]
-    if not heat.empty and "heat_topic" in heat:
-        h = heat.assign(hs=pd.to_numeric(heat["heat_score"], errors="coerce"))
+    ctx["protest_locations"] = _split_counts(p.get("protest_location", pd.Series(dtype=object)), p["eng"]) if not p.empty else []
+    ctx["protest_topics"] = _split_counts(p.get("protest_topic", pd.Series(dtype=object)), p["eng"]) if not p.empty else []
+    ctx["organizers"] = _split_counts(p.get("organizers_or_groups", pd.Series(dtype=object)), p["eng"]) if not p.empty else []
+    heat_rows = heat_src[pd.to_numeric(heat_src.get("heat_score"), errors="coerce").notna()] if "heat_score" in heat_src else heat_src.iloc[0:0]
+    if not heat_rows.empty and "heat_topic" in heat_rows:
+        h = heat_rows.assign(hs=pd.to_numeric(heat_rows["heat_score"], errors="coerce"))
         h = h[h["heat_topic"].fillna("").ne("")]
         g = (h.groupby("heat_topic").agg(avg=("hs", "mean"), total=("hs", "sum"), posts=("hs", "size"),
                                           eng=("eng", "sum")).reset_index()
@@ -218,8 +213,35 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
                        for r in g.itertuples()]
     else:
         ctx["heat"] = []
-    ctx["summary"] = _summaries(ctx, s_cur, s_prev)
+    ctx["summary"] = _summaries(ctx, s_cur, None)
     return ctx
+
+
+def _present(row) -> dict:
+    from .origin import origin_label
+    from .textnorm import display_handle, first_source_url, format_row_when
+    rec = row.to_dict() if hasattr(row, "to_dict") else dict(row)
+    text = str(rec.get("_body") or "")
+    url = first_source_url(rec)
+    platform = origin_label({**rec, "link": url, "url": url})
+    if not platform or platform.lower() in {"unknown", "unknown source"}:
+        platform = "Platform not supplied"
+    tt = str(rec.get("threat_type") or "").strip()
+    if tt.lower() in _HIDE_TYPE:
+        tt = ""
+    long = len(text) > 360
+    return {
+        "doc_id": rec.get("document_id") or rec.get("Document ID") or "",
+        "text": text,
+        "preview": (text[:360].rstrip() + "…") if long else text,
+        "long": long,
+        "type": tt,
+        "link": url,
+        "handle": display_handle(rec),
+        "platform": platform,
+        "when": format_row_when(rec),
+        "source": platform,
+    }
 
 
 def _n(k, word):
@@ -281,58 +303,63 @@ def _aware(v):
 
 
 def build_threat_chart(df: pd.DataFrame) -> dict:
-    """Threat posts by target with type, for the dashboard graphic under the map."""
+    """One bar per stated target. The same target is not split by threat type.
+
+    Posts with no stated target are counted beside the chart, not ranked as a target.
+    """
+    empty = {"rows": [], "grouping": "No stated threat targets in the last 30 days.",
+             "unspecified": 0, "stored_types": [], "stored_targets": []}
     if df is None or df.empty:
-        return {"rows": [], "grouping": "No stored threat targets in this month.",
-                "stored_types": [], "stored_targets": []}
-    rows = []
-    eng = _num(df[_col(df, "engagement")]) if _col(df, "engagement") else pd.Series(0, index=df.index)
+        return empty
+    from .judgment import stated_targets
+    bag: dict[str, dict] = {}
+    unspecified = 0
+    eng = df["eng"] if "eng" in df.columns else (
+        _num(df[_col(df, "engagement")]) if _col(df, "engagement") else pd.Series(0, index=df.index))
     for i, r in df.iterrows():
-        cat = str(r.get("category") or "")
-        refined = str(r.get("refined_category") or "")
-        if cat not in THREAT_CATS and refined not in THREAT_CATS:
+        if "_threat" in df.columns and not bool(r.get("_threat")):
             continue
-        targets = [t.strip() for t in str(r.get("targets") or "").split(";") if t.strip()]
-        ttype = str(r.get("threat_type") or "unspecified").strip() or "unspecified"
-        if not targets:
-            targets = ["Unspecified target"]
-        for t in targets[:2]:
-            rows.append({"label": t, "type": ttype, "engagement": float(eng.get(i, 0)), "value": 1})
-    if not rows:
-        return {"rows": [], "grouping": "No stored threat targets in this month.",
-                "stored_types": [], "stored_targets": []}
-    # aggregate
-    bag: dict[tuple, dict] = {}
-    for r in rows:
-        key = (r["label"].lower(), r["type"].lower())
-        rec = bag.setdefault(key, {"label": r["label"], "type": r["type"], "value": 0, "engagement": 0.0})
-        rec["value"] += 1
-        rec["engagement"] += r["engagement"]
+        labels = r.get("_targets") if isinstance(r.get("_targets"), list) else None
+        if labels is None:
+            labels = stated_targets(r.to_dict())
+        weight = float(eng.get(i, 0) if hasattr(eng, "get") else 0)
+        if not labels:
+            unspecified += 1
+            continue
+        for label in labels:
+            rec = bag.setdefault(label.lower(), {"label": label, "value": 0, "engagement": 0.0})
+            rec["value"] += 1
+            rec["engagement"] += weight
+    if not bag and not unspecified:
+        return empty
     items = sorted(bag.values(), key=lambda x: (x["value"], x["engagement"]), reverse=True)[:12]
-    top = max(it["value"] for it in items) or 1
-    stored_types = sorted({it["type"] for it in items})
-    stored_targets = sorted({it["label"] for it in items})
+    top = max((it["value"] for it in items), default=1) or 1
     for it in items:
         it["pct"] = round(100 * it["value"] / top, 1)
         it["engagement"] = int(it["engagement"])
+        it["type"] = ""
     grouping = (
-        "Groups come from stored fields only: each bar is one stored target (targets) "
-        "with its stored threat type (threat_type). Text is shown as saved, with no renaming. "
-        "A post with several targets is counted once per target. A blank type is shown as unspecified. "
-        f"This selection has {len(stored_types)} stored type value"
-        f"{'' if len(stored_types) == 1 else 's'} and {len(stored_targets)} stored target value"
-        f"{'' if len(stored_targets) == 1 else 's'}."
+        "Each bar is one stated target. Names for the same target are combined, "
+        "including AUKUS and AUKUS program, and the Australian government with the "
+        "Albanese government, the Australian Labor government, and the Labor Party when "
+        "that is the stated target. US bases stay separate. A post counts once for each "
+        "of its targets. Posts with no stated target are not ranked"
+        + (f" ({unspecified} in this window)." if unspecified else ".")
     )
-    return {"rows": items, "grouping": grouping, "stored_types": stored_types,
-            "stored_targets": stored_targets}
+    return {"rows": items, "grouping": grouping, "unspecified": unspecified,
+            "stored_types": [], "stored_targets": [it["label"] for it in items]}
 
 
-def _upcoming(posts: pd.DataFrame, alerts: pd.DataFrame | None) -> list[dict]:
+def _upcoming(posts: pd.DataFrame, alerts: pd.DataFrame | None, now: datetime | None = None) -> list[dict]:
     """Planned protests from stored dates. Uses local place names only (no network)."""
     from . import geo
+    from .judgment import display_flags
     from .mapdata import _event_kind, _parse_date, _places_from_alert, _s, _split_places
     from .origin import origin_label
-    now = datetime.now(timezone.utc)
+    from .textnorm import first_source_url, single_post_text, usable_source_url
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     rows = []
 
     def keep(place: str) -> bool:
@@ -345,20 +372,20 @@ def _upcoming(posts: pd.DataFrame, alerts: pd.DataFrame | None) -> list[dict]:
         for r in posts.to_dict(orient="records"):
             data = r.get("data") if isinstance(r.get("data"), dict) else {}
             merged = {**data, **{k: v for k, v in r.items() if k != "data" and _s(v)}}
-            cat = str(merged.get("category") or "")
-            refined = str(merged.get("refined_category") or "")
-            if cat not in PROTEST_CATS and refined not in PROTEST_CATS:
+            flags = display_flags(merged)
+            if not flags["protest"]:
                 continue
-            raw = merged.get("event_date") or ""
-            when = _parse_date(str(raw)) or _parse_date(str(merged.get("narrative_summary") or ""))
+            raw = flags["raw"].get("event_date") or merged.get("event_date") or ""
+            when = _parse_date(str(raw)) or _parse_date(str(merged.get("narrative_summary") or "")) or _parse_date(flags.get("text") or "")
             if not when or when.date() <= now.date():
                 continue
             status = str(merged.get("mobilization_status") or "")
-            summary = _s(merged.get("narrative_summary")) or _s(merged.get("Hit Sentence")) or _s(merged.get("hit sentence"))
-            if _event_kind(status, True, refined, summary) != "planned":
+            summary = single_post_text(merged) or _s(merged.get("narrative_summary"))
+            if _event_kind(status, True, str(merged.get("refined_category") or ""), summary) != "planned":
                 continue
-            link = merged.get("link") or merged.get("URL") or merged.get("url") or ""
-            for place in _split_places(merged.get("protest_location")):
+            link = first_source_url(merged)
+            places = _split_places(merged.get("protest_location")) or _split_places(flags["raw"].get("protest_location"))
+            for place in places:
                 if not keep(place):
                     continue
                 rows.append({"date": when.strftime("%Y-%m-%d"), "place": place,
@@ -375,23 +402,28 @@ def _upcoming(posts: pd.DataFrame, alerts: pd.DataFrame | None) -> list[dict]:
                     continue
                 rows.append({"date": when.strftime("%Y-%m-%d"), "place": place,
                              "source": SOURCE_LABELS.get((r.get("source") or "").lower(), r.get("source") or ""),
-                             "text": str(r.get("text") or "")[:180], "url": r.get("url") or ""})
+                             "text": str(r.get("text") or "")[:180],
+                             "url": usable_source_url(r.get("url") or "")})
     rows.sort(key=lambda e: (e.get("date") or "9999", e.get("place") or ""))
     return rows[:12]
 
 
-def _narrative(current: dict, previous: dict | None, ranking: dict, upcoming: list) -> str:
-    threat = _change(current["threats"], previous["threats"] if previous else None, "threat posts")
-    protest = _change(current["protests"], previous["protests"] if previous else None, "protest posts")
+def _narrative(current: dict, ranking: dict, upcoming: list) -> str:
+    threats = current.get("threats") or 0
+    protests = current.get("protests") or 0
     lead = ""
     rows = (ranking or {}).get("rows") or []
     if rows:
         top = rows[0]
-        lead = f" The highest-ranked stored target is {top['label']} ({top['type']})."
+        lead = f" The highest-ranked target is {top['label']}."
+    unspecified = (ranking or {}).get("unspecified") or 0
+    if unspecified:
+        lead += f" {unspecified} threat post{'s' if unspecified != 1 else ''} ha{'ve' if unspecified != 1 else 's'} no stated target."
     planned = len(upcoming or [])
     plan = (f" {planned} planned protest{'s' if planned != 1 else ''} "
-            f"{'are' if planned != 1 else 'is'} on the map.")
-    return f"{threat[0].upper() + threat[1:]}. {protest[0].upper() + protest[1:]}.{lead}{plan}"
+            f"{'are' if planned != 1 else 'is'} listed.")
+    return (f"{threats} threat post{'s' if threats != 1 else ''} and "
+            f"{protests} protest post{'s' if protests != 1 else ''} in the last {WINDOW_DAYS} days.{lead}{plan}")
 
 
 def build_alerts(alerts: pd.DataFrame | None, meltwater_seen: dict) -> dict:

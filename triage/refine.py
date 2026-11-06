@@ -47,7 +47,14 @@ SYSTEM_PROMPT = (
     "string (2-6 words; empty if not a protest), \"organizers_or_groups\": [strings: who is "
     "behind the protest], \"event_date\": string (only if stated, else empty), "
     "\"scale_or_turnout\": string (only if stated, else empty)}]}. "
-    "One result per input id. Use American spelling."
+    "One result per input id. Use American spelling. "
+    "A threat is the poster's own direct threat. Sarcasm, criticism, and a description of "
+    "someone else's action (including 'the old trick' and 'so someone can bomb') are not threats. "
+    "A news digest, a promotional post, a policy warning, and a petition or submission are not "
+    "protests. A protest needs an invitation to a meeting or assembly; a high-confidence event "
+    "also needs a date and an Australian place. Use AUKUS for the AUKUS program. Use Australian "
+    "government when the Albanese government or the Labor government is the stated target. "
+    "Leave targets empty when none is stated."
 )
 
 # A completion function takes (system, user) and returns the JSON string reply.

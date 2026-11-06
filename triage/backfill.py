@@ -2,7 +2,7 @@
 
 This module prices the work and can run it only after an explicit approval.
 Nothing here is called on startup, and the default command prints the estimate
-and does not contact the API.
+and does not contact the API. A reviewed merge does not supply that approval.
 
 List prices below are Claude Haiku 4.5 standard Messages API rates (USD per
 million tokens): $1 input, $5 output. Batch API is half of that. Source:

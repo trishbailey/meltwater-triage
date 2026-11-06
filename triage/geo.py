@@ -72,6 +72,9 @@ CITY_CENTROIDS = {
     "melbourne": (-37.8136, 144.9631),
     "brisbane": (-27.4698, 153.0251),
     "perth": (-31.9505, 115.8605),
+    # Park beside the Supreme Court of Western Australia, Perth.
+    "supreme court gardens": (-31.9572, 115.8606),
+    "parliament house": (-35.3081, 149.1245),
     "adelaide": (-34.9285, 138.6007),
     "canberra": (-35.2809, 149.1300),
     "hobart": (-42.8821, 147.3272),
