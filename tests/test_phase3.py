@@ -156,7 +156,7 @@ def test_dashboard_renders_with_data(client):
     assert "Top threat authors" not in html and "Top protest authors" not in html
     threats = html.split('id="threats"')[1].split("</section>")[0]
     assert threats.index("analyze-btn") < threats.index("/download/threats.xlsx")  # download comes last
-    assert threats.index("/download/threats.xlsx") > threats.index("an-topics")
+    assert threats.index("/download/threats.xlsx") > threats.index("an-targets")
     assert "sec-head" in threats and threats.index("dl-btn") > threats.index("done-box")
     for gone in ("Early warning", "Monthly trend", "Upcoming protests", "Trish", "google-analytics"):
         assert gone not in html

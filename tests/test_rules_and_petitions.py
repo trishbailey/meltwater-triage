@@ -175,7 +175,6 @@ def test_threat_targets_must_be_specific_sites():
     assert d._targets({"targets": "AUKUS", "text": "nothing"}, True) == []
 
 
-def test_protest_section_has_no_topic_analysis():
+def test_no_topic_analysis_in_dashboard():
     from pathlib import Path
-    src = Path("templates/dashboard.html").read_text()
-    assert '{% if s.kind == "threat" %}<div><h3>Topic analysis' in src
+    assert "Topic analysis" not in Path("templates/dashboard.html").read_text()
