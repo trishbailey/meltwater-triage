@@ -29,7 +29,7 @@ def synthetic_df():
 
 def test_threat_requires_target():
     assert screen_text("I will kill time today", P)["category"] == ""
-    assert screen_text("kill the AUKUS deal", P)["category"] == "threat"
+    assert screen_text("kill the defence minister", P)["category"] == "threat"
 
 
 def test_whole_word_matching():
@@ -173,7 +173,7 @@ def test_upload_rejects_cross_site_origin(client):
 def test_row_limit_rejects_before_screening(monkeypatch):
     monkeypatch.setenv("MAX_SCREEN_ROWS", "2")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    csv = b"Hit Sentence\nkill the AUKUS deal\nbomb HMAS Stirling\nattack the prime minister\n"
+    csv = b"Hit Sentence\nkill the defence minister\nbomb HMAS Stirling\nattack the prime minister\n"
     with pytest.raises(ValueError, match="exceeds 2 rows"):
         combine_uploads([("a.csv", csv)])
 

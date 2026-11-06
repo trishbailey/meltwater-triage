@@ -317,7 +317,7 @@ def test_crash_after_paid_batch_is_not_repeated(tmp_path, monkeypatch):
     monkeypatch.setenv("REFINE_BATCH_SIZE", "1")
     monkeypatch.setenv("HEAT_MAX_POSTS", "0")
     from triage.pipeline import process
-    first = "kill the AUKUS deal tomorrow at the gate"
+    first = "kill the defence minister tomorrow at the gate"
     second = "bomb HMAS Stirling next week in the yard"
     data = _book([
         {"Document ID": "P1", "URL": "https://x.com/a/1", "Engagement": 9, "Hit Sentence": first},
@@ -378,7 +378,7 @@ def test_save_failed_job_resumes_without_paying_again(tmp_path, monkeypatch):
     jobs._engine_url = ""
     jobs._jobs.clear()
     jobs.JOB_DIR = tmp_path / "jobs"
-    first = "kill the AUKUS deal tomorrow at the gate"
+    first = "kill the defence minister tomorrow at the gate"
     second = "bomb HMAS Stirling next week in the yard"
     data = _book([
         {"Document ID": "P1", "URL": "https://x.com/a/1", "Engagement": 9, "Hit Sentence": first},

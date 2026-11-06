@@ -117,7 +117,7 @@ def test_unified_merges_alerts_and_drops_url_duplicates(tmp_path):
     st.add_alert(parse_alert(dict(ALERT, url="https://x.com/a/status/99", text="nice weather")), now=now)
     posts = pd.DataFrame([{"Document ID": "1", "Date": now.strftime("%Y-%m-%d"), "post_date": now.replace(tzinfo=None),
                            "URL": "https://x.com/a/status/99", "link": "https://x.com/a/status/99",
-                           "category": "threat", "is_flagged": True, "Hit Sentence": "kill the AUKUS deal"}])
+                           "category": "threat", "is_flagged": True, "Hit Sentence": "kill the defence minister"}])
     st.save_run(rows_to_store(posts, posts), ["s.xlsx"], 1)
     df = unified.load(st)
     assert len(df) == 2  # stored post + the bluesky alert; "nice weather" fails the pre-sort

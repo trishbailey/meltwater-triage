@@ -121,17 +121,24 @@ def _word_index(text: str, pos: int) -> int:
     return len(_WORD.findall(text[:pos]))
 
 
-def _threat_terms_in_context(text: str, p: Patterns, target_positions: list[int]) -> list[str]:
+ABSTRACT_TARGETS = {"aukus", "submarine program", "nuclear submarine", "nuclear-powered submarine",
+                    "pillar ii", "pillar one", "ssn-aukus"}
+
+
+def _threat_terms_in_context(text: str, p: Patterns, target_positions: list[int],
+                             concrete_positions: list[int] | None = None) -> list[str]:
     """Threat terms; weak ones only count when a target is within p.proximity words."""
     if p.threat is None or not target_positions:
         return []
     target_words = [_word_index(text, pos) for pos in target_positions]
+    near_words = [_word_index(text, pos) for pos in (target_positions if concrete_positions is None
+                                                     else concrete_positions)]
     found = set()
     for mt in p.threat.finditer(text):
         term = mt.group(0)
         if term.lower() in p.weak_threat:
             w = _word_index(text, mt.start())
-            if not any(abs(w - tw) <= p.proximity for tw in target_words):
+            if not any(abs(w - tw) <= p.proximity for tw in near_words):
                 continue
         found.add(term)
     return sorted(found, key=str.lower)
@@ -162,7 +169,8 @@ def screen_text(text: str, p: Patterns) -> dict:
     target_spans = [(mt.start(), mt.group(0)) for pat in (p.target, p.target_cs) if pat
                     for mt in pat.finditer(text)]
     target_terms = sorted({t for _, t in target_spans}, key=str.lower)
-    threat_terms = _threat_terms_in_context(text, p, [pos for pos, _ in target_spans])
+    concrete_pos = [pos for pos, t in target_spans if t.lower() not in ABSTRACT_TARGETS]
+    threat_terms = _threat_terms_in_context(text, p, [pos for pos, _ in target_spans], concrete_pos)
     is_threat = bool(threat_terms and target_terms)
 
     m = {name: matched_terms(text, getattr(p, name)) for name in (
