@@ -72,3 +72,12 @@ def test_inquiry_report_summary_is_not_a_protest():
     t = ("AUKUS ENQUIRY REPORT RELEASED TODAY The independent public inquiry into AUKUS was created by the "
          "organizers and the Australian Peace and Security Forum, gathering public evidence and publishing findings.")
     assert f.screen_text(t, f.Patterns())["category"] == ""
+
+
+def test_slogan_in_news_commentary_is_not_a_protest():
+    from triage import filters as f
+    p = f.Patterns()
+    t = ("QT @AJEnglish: No to AUKUS https://t.co/x ; US commentator Tucker Carlson claims Israeli Prime Minister "
+         "is pressuring President Donald Trump to launch a nuclear strike on Iran, targeting an enrichment facility.")
+    assert f.screen_text(t, p)["category"] == ""
+    assert f.screen_text("Rally against AUKUS: No to AUKUS, Saturday 14 November outside Town Hall", p)["category"] == "protest"
