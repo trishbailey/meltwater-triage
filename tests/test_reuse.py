@@ -55,7 +55,7 @@ def test_second_upload_skips_claude_for_same_document_ids(tmp_path, monkeypatch)
     res2 = process([("2.xlsx", data)], refine_fn=_fake(calls), heat_fn=_fake(calls), storage=st)
     assert calls == [], calls
     assert len(res2.flagged) == 2
-    assert any("Skipped Claude" in n for n in res2.notes)
+    assert any("Skipped a new review" in n for n in res2.notes)
     # Classification preserved
     assert set(res2.flagged["refined_category"].dropna().astype(str)) == {"threat"}
 

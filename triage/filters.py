@@ -5,6 +5,7 @@ import io
 import os
 import re
 import zipfile
+from datetime import date, datetime
 from typing import Iterable
 
 import pandas as pd
@@ -322,6 +323,127 @@ def _read_csv(data: bytes, nrows: int | None = None) -> pd.DataFrame:
         except (UnicodeError, pd.errors.ParserError):
             continue
     raise ValueError("Could not parse CSV file")
+
+
+def _excel_cell(value):
+    """Match pandas `read_excel(..., dtype=str)` for the cell types openpyxl yields."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    return str(value)
+
+
+def screen_chunk_rows() -> int:
+    return _env_int("SCREEN_CHUNK_ROWS", 2000)
+
+
+def _iter_xlsx_chunks(filename: str, data: bytes, budget: int):
+    """Yield dataframes of at most SCREEN_CHUNK_ROWS without holding the whole sheet."""
+    import openpyxl
+    _guard_xlsx(data)
+    label = _file_label(filename)
+    chunk_rows = screen_chunk_rows()
+    book = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    produced = 0
+    try:
+        for sheet in book.sheetnames:
+            ws = book[sheet]
+            rows = ws.iter_rows(values_only=True)
+            header = next(rows, None)
+            if not header or all(cell is None for cell in header):
+                continue
+            columns = [str(cell) if cell is not None else "" for cell in header]
+            batch: list[list] = []
+
+            def flush():
+                nonlocal produced
+                if not batch:
+                    return None
+                if produced + len(batch) > budget:
+                    raise _row_limit_error()
+                frame = pd.DataFrame(batch, columns=columns)
+                frame["uploaded_file"] = label
+                frame["worksheet"] = sheet
+                produced += len(frame)
+                batch.clear()
+                return frame
+
+            for row in rows:
+                if row is None or all(cell is None for cell in row):
+                    continue
+                values = [_excel_cell(cell) for cell in row]
+                if len(values) < len(columns):
+                    values.extend([None] * (len(columns) - len(values)))
+                elif len(values) > len(columns):
+                    values = values[:len(columns)]
+                batch.append(values)
+                if len(batch) >= chunk_rows:
+                    yielded = flush()
+                    if yielded is not None:
+                        yield yielded
+            tail = flush()
+            if tail is not None:
+                yield tail
+    finally:
+        book.close()
+
+
+def _iter_csv_chunks(filename: str, data: bytes, budget: int):
+    label = _file_label(filename)
+    chunk_rows = screen_chunk_rows()
+    produced = 0
+    for enc, sep in (("utf-16", "\t"), ("utf-8-sig", None), ("latin-1", None)):
+        try:
+            reader = pd.read_csv(io.BytesIO(data), encoding=enc, sep=sep, engine="python",
+                                 dtype=str, chunksize=chunk_rows)
+            for frame in reader:
+                if frame.empty:
+                    continue
+                if produced + len(frame) > budget:
+                    raise _row_limit_error()
+                frame = frame.copy()
+                frame["uploaded_file"] = label
+                frame["worksheet"] = ""
+                produced += len(frame)
+                yield frame
+            return
+        except (UnicodeError, pd.errors.ParserError):
+            produced = 0
+            continue
+    raise ValueError("Could not parse CSV file")
+
+
+def iter_upload_chunks(files: list[tuple[str, bytes]]):
+    """Yield raw upload chunks. The caller can screen and drop each chunk."""
+    budget = max_screen_rows()
+    any_rows = False
+    for name, data in files:
+        lower = name.lower()
+        if lower.endswith(".xls") and not lower.endswith(".xlsx"):
+            raise ValueError("Legacy .xls files are not supported. Save the export as .xlsx or .csv.")
+        if lower.endswith(".xlsx"):
+            iterator = _iter_xlsx_chunks(name, data, budget)
+        elif lower.endswith(".csv"):
+            iterator = _iter_csv_chunks(name, data, budget)
+        else:
+            raise ValueError(f"Unsupported file type: {_file_label(name)}")
+        for frame in iterator:
+            any_rows = True
+            budget -= len(frame)
+            yield frame
+    if not any_rows:
+        raise ValueError("No non-empty worksheets found in the uploaded files.")
 
 
 def combine_uploads(files: list[tuple[str, bytes]]) -> pd.DataFrame:

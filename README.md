@@ -65,6 +65,28 @@ engagement, first/last seen; 2+ threat posts), and, when heat ran, `Heat by topi
 by average then total heat, with engagement) and `Heat (all posts)`. Cell text is
 written as text, including values that start with `=`.
 
+## Uploads, migrations, and duplicates
+`create_all` does not add columns. On startup the app adds any missing columns
+(including `upload_jobs.payload`) without deleting rows. The uploaded file is
+stored before screening starts, so a restart resumes a running job from those
+bytes. Excel is read in chunks (`SCREEN_CHUNK_ROWS`, default 2000). Files larger
+than `SCREEN_KEEP_ROWS` (default 2500) keep flagged rows and the heat sample in
+memory; the screened-row count is unchanged.
+
+Before review, a post already stored under the same Document ID, normalized URL,
+or normalized-text hash is not sent again. Identical wording later in the same
+file reuses that result. The publishing platform or site is stored as the source.
+The export product name is never shown as the source.
+
+`python -m triage.backfill` prints a Haiku 4.5 price estimate for flagged posts
+that have no stored review. It does not call the API. A paid run stays refused
+unless an explicit approval value is set, and an estimate above $5 is refused.
+
+The map is Australia only. Low zoom draws the Natural Earth 110m Australia
+outline on a dark navy ocean (public CARTO basemap tiles currently answer with
+an API-key watermark, so they are not used). Zoom level 7 and closer adds
+darkened OpenStreetMap streets.
+
 ## Storage
 `triage/storage.py` (SQLAlchemy) stores each upload run and every flagged or heat-scored post, deduped by
 Document ID. Reporting periods use the post date (`post_week`, `post_month` from Meltwater Date), with upload week/month kept as secondary fields. Helpers: `monthly_counts`, `monthly_heat`, `load_posts`. Enabled when

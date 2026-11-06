@@ -86,15 +86,23 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
     except Exception:
         ctx["relevance_labels"] = {}
         ctx["noisy_terms"] = []
-    ctx.setdefault("threat_chart", {"rows": []})
+    ctx.setdefault("threat_chart", {"rows": [], "grouping": "", "stored_types": [], "stored_targets": []})
     ctx.setdefault("flagged_sample", [])
+    ctx.setdefault("upcoming", [])
+    ctx.setdefault("narrative", "")
     from . import geo
+    ctx["land"] = geo.australia_land()
     ctx["map"] = {"assets": geo.asset_markers(), "days": map_days,
-                 "colors": {"asset": geo.ASSET_COLOR, "event": geo.EVENT_COLOR,
-                            "alert": geo.EVENT_ALERT_COLOR},
-                 "legend": [{"label": "Defense and civic sites", "color": geo.ASSET_COLOR},
-                            {"label": "Protest (Meltwater)", "color": geo.EVENT_COLOR},
-                            {"label": "Early-warning alert", "color": geo.EVENT_ALERT_COLOR}]}
+                 "colors": {"asset": geo.ASSET_COLOR, "past": geo.EVENT_COLOR,
+                            "planned": geo.UPCOMING_COLOR, "advocacy": geo.ADVOCACY_COLOR,
+                            "threat": geo.THREAT_MAP_COLOR},
+                 "legend": [
+                     {"label": "Sites", "color": geo.ASSET_COLOR, "swatch": "site"},
+                     {"label": "Threats", "color": geo.THREAT_MAP_COLOR, "swatch": "fill"},
+                     {"label": "Past protests", "color": geo.EVENT_COLOR, "swatch": "fill"},
+                     {"label": "Planned protests", "color": geo.UPCOMING_COLOR, "swatch": "hollow"},
+                     {"label": "Advocacy", "color": geo.ADVOCACY_COLOR, "swatch": "fill"},
+                 ]}
     if posts.empty:
         return ctx
     df = posts.copy()
@@ -160,18 +168,22 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
         ctx["threat_types"] = []
     ctx["targets"] = _split_counts(t.get("targets", pd.Series(dtype=object)), t["eng"])
     ctx["threat_chart"] = build_threat_chart(t)
+    ctx["upcoming"] = _upcoming(df, alerts)
+    ctx["narrative"] = _narrative(s_cur, s_prev, ctx["threat_chart"], ctx["upcoming"])
     ctx["people"] = _split_counts(m[m["is_threat"] | m["is_protest"]].get("named_individuals", pd.Series(dtype=object)), m["eng"])
 
     posters = recurring_threat_posters(t, min_count=2) if not t.empty else pd.DataFrame()
     text_cols = [_col(df, c) for c in ("hit sentence", "opening text", "title")]
+    from .origin import origin_label
     sample = t.sort_values("eng", ascending=False).head(25) if not t.empty else t
     ctx["flagged_sample"] = [{
-        "doc_id": r.get("document_id"),
+        "doc_id": r.get("document_id") or r.get("Document ID"),
         "text": _text(r, text_cols),
         "summary": r.get("narrative_summary"),
         "type": r.get("threat_type"),
-        "link": r.get("link"),
+        "link": r.get("link") or r.get("URL") or r.get("url"),
         "author": r.get("author_handle") or r.get("author_name") or "",
+        "source": origin_label(r.to_dict()),
     } for _, r in sample.iterrows()]
     hc, nc = _col(t, "author handle"), _col(t, "author name")
     plist = []
@@ -184,7 +196,9 @@ def build(posts: pd.DataFrame, alerts: pd.DataFrame | None = None,
                       "posts": [{"text": _text(row, text_cols), "link": row.get("link"),
                                  "summary": row.get("narrative_summary"),
                                  "type": row.get("threat_type"),
-                                 "doc_id": row.get("document_id")} for _, row in mine.head(10).iterrows()]})
+                                 "source": origin_label(row.to_dict()),
+                                 "doc_id": row.get("document_id") or row.get("Document ID")}
+                                for _, row in mine.head(10).iterrows()]})
     ctx["posters"] = plist
 
     ctx["protest_locations"] = _split_counts(p.get("protest_location", pd.Series(dtype=object)), p["eng"])
@@ -268,7 +282,8 @@ def _aware(v):
 def build_threat_chart(df: pd.DataFrame) -> dict:
     """Threat posts by target with type, for the dashboard graphic under the map."""
     if df is None or df.empty:
-        return {"rows": []}
+        return {"rows": [], "grouping": "No stored threat targets in this month.",
+                "stored_types": [], "stored_targets": []}
     rows = []
     eng = _num(df[_col(df, "engagement")]) if _col(df, "engagement") else pd.Series(0, index=df.index)
     for i, r in df.iterrows():
@@ -283,7 +298,8 @@ def build_threat_chart(df: pd.DataFrame) -> dict:
         for t in targets[:2]:
             rows.append({"label": t, "type": ttype, "engagement": float(eng.get(i, 0)), "value": 1})
     if not rows:
-        return {"rows": []}
+        return {"rows": [], "grouping": "No stored threat targets in this month.",
+                "stored_types": [], "stored_targets": []}
     # aggregate
     bag: dict[tuple, dict] = {}
     for r in rows:
@@ -293,10 +309,88 @@ def build_threat_chart(df: pd.DataFrame) -> dict:
         rec["engagement"] += r["engagement"]
     items = sorted(bag.values(), key=lambda x: (x["value"], x["engagement"]), reverse=True)[:12]
     top = max(it["value"] for it in items) or 1
+    stored_types = sorted({it["type"] for it in items})
+    stored_targets = sorted({it["label"] for it in items})
     for it in items:
         it["pct"] = round(100 * it["value"] / top, 1)
         it["engagement"] = int(it["engagement"])
-    return {"rows": items}
+    grouping = (
+        "Groups come from stored fields only: each bar is one stored target (targets) "
+        "with its stored threat type (threat_type). Text is shown as saved, with no renaming. "
+        "A post with several targets is counted once per target. A blank type is shown as unspecified. "
+        f"This selection has {len(stored_types)} stored type value"
+        f"{'' if len(stored_types) == 1 else 's'} and {len(stored_targets)} stored target value"
+        f"{'' if len(stored_targets) == 1 else 's'}."
+    )
+    return {"rows": items, "grouping": grouping, "stored_types": stored_types,
+            "stored_targets": stored_targets}
+
+
+def _upcoming(posts: pd.DataFrame, alerts: pd.DataFrame | None) -> list[dict]:
+    """Planned protests from stored dates. Uses local place names only (no network)."""
+    from . import geo
+    from .mapdata import _event_kind, _parse_date, _places_from_alert, _s, _split_places
+    from .origin import origin_label
+    now = datetime.now(timezone.utc)
+    rows = []
+
+    def keep(place: str) -> bool:
+        hit = geo._centroid(place)
+        if hit is None:
+            return True
+        return geo.in_australia(hit[0], hit[1])
+
+    if posts is not None and not posts.empty:
+        for r in posts.to_dict(orient="records"):
+            data = r.get("data") if isinstance(r.get("data"), dict) else {}
+            merged = {**data, **{k: v for k, v in r.items() if k != "data" and _s(v)}}
+            cat = str(merged.get("category") or "")
+            refined = str(merged.get("refined_category") or "")
+            if cat not in PROTEST_CATS and refined not in PROTEST_CATS:
+                continue
+            raw = merged.get("event_date") or ""
+            when = _parse_date(str(raw)) or _parse_date(str(merged.get("narrative_summary") or ""))
+            if not when or when.date() <= now.date():
+                continue
+            status = str(merged.get("mobilization_status") or "")
+            summary = _s(merged.get("narrative_summary")) or _s(merged.get("Hit Sentence")) or _s(merged.get("hit sentence"))
+            if _event_kind(status, True, refined, summary) != "planned":
+                continue
+            link = merged.get("link") or merged.get("URL") or merged.get("url") or ""
+            for place in _split_places(merged.get("protest_location")):
+                if not keep(place):
+                    continue
+                rows.append({"date": when.strftime("%Y-%m-%d"), "place": place,
+                             "source": origin_label(merged), "text": summary[:180], "url": link})
+    if alerts is not None and not getattr(alerts, "empty", True):
+        for r in alerts.to_dict(orient="records"):
+            when = _parse_date(str(r.get("text") or ""))
+            if not when or when.date() <= now.date():
+                continue
+            if _event_kind("", True, "", str(r.get("text") or "")) != "planned":
+                continue
+            for place in _places_from_alert(r):
+                if not keep(place):
+                    continue
+                rows.append({"date": when.strftime("%Y-%m-%d"), "place": place,
+                             "source": SOURCE_LABELS.get((r.get("source") or "").lower(), r.get("source") or ""),
+                             "text": str(r.get("text") or "")[:180], "url": r.get("url") or ""})
+    rows.sort(key=lambda e: (e.get("date") or "9999", e.get("place") or ""))
+    return rows[:12]
+
+
+def _narrative(current: dict, previous: dict | None, ranking: dict, upcoming: list) -> str:
+    threat = _change(current["threats"], previous["threats"] if previous else None, "threat posts")
+    protest = _change(current["protests"], previous["protests"] if previous else None, "protest posts")
+    lead = ""
+    rows = (ranking or {}).get("rows") or []
+    if rows:
+        top = rows[0]
+        lead = f" The highest-ranked stored target is {top['label']} ({top['type']})."
+    planned = len(upcoming or [])
+    plan = (f" {planned} planned protest{'s' if planned != 1 else ''} "
+            f"{'are' if planned != 1 else 'is'} on the map.")
+    return f"{threat[0].upper() + threat[1:]}. {protest[0].upper() + protest[1:]}.{lead}{plan}"
 
 
 def build_alerts(alerts: pd.DataFrame | None, meltwater_seen: dict) -> dict:

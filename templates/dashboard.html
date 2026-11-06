@@ -1,94 +1,109 @@
 {% extends "_base.html" %}{% block title %}Threat and Protest Monitor{% endblock %}{% block body %}
-<p class="intro">Live picture of threat and protest signals from Meltwater exports and monitored channels. Use <strong>Add data</strong> to upload a new export.</p>
-{% macro bars(items, color, unit="posts") %}<div class="bars">{% for it in items %}
-<div class="bar"><div class="lab">{{ it.label }}</div><div class="track" style="display:flex;align-items:center">
-<div class="fill" style="width:{{ it.pct }}%;background:{{ it.color or color }}"></div><span class="val">{{ "{:,}".format(it.value) }} {{ unit if it.value != 1 else unit[:-1] }}</span></div></div>
-{% endfor %}</div>{% endmacro %}
+<p class="intro">Live picture of threat and protest signals from stored exports and monitored channels. Use <strong>Add data</strong> to upload a new export.</p>
 <h1>Threat and Protest Monitor</h1>
 <p class="note"><label><input type="checkbox" id="show-hidden"> Show items marked not relevant</label></p>
 
 <section class="panel" id="map-panel"><h2>Sites, protests and threats</h2>
-<p class="how">Labeled sites are fixed. Circles mark protests (solid = past, dashed = upcoming). Diamonds mark threat targets. Use the filters to focus the map.</p>
-<div class="map-filters" role="group" aria-label="Map filters">
+<p class="how">Australia only. All 16 sites stay on the map, with a label and an icon: anchor for naval and port, plane for air, building for headquarters, shipyard and industry, shield for army and base. The icon is a white glyph on blue.</p>
+<div class="map-filters" role="group" aria-label="Map time range">
 <button type="button" class="btn map-range" data-days="7">Last 7 days</button>
 <button type="button" class="btn map-range" data-days="30" aria-current="true">Last 30 days</button>
 <button type="button" class="btn map-range" data-days="90">Last 90 days</button>
 <button type="button" class="btn map-range" data-days="all">All time</button>
 </div>
 <div class="map-filters" role="group" aria-label="Map layers">
-<button type="button" class="btn map-layer" data-layer="past" aria-pressed="true">Past protests</button>
-<button type="button" class="btn map-layer" data-layer="upcoming" aria-pressed="true">Upcoming</button>
 <button type="button" class="btn map-layer" data-layer="threats" aria-pressed="true">Threats</button>
-<button type="button" class="btn map-layer" data-layer="alerts" aria-pressed="true">Alerts</button>
+<button type="button" class="btn map-layer" data-layer="past" aria-pressed="true">Past protests</button>
+<button type="button" class="btn map-layer" data-layer="planned" aria-pressed="true">Planned protests</button>
+<button type="button" class="btn map-layer" data-layer="advocacy" aria-pressed="true">Advocacy</button>
 </div>
-<div id="dash-map" class="dash-map" role="img" aria-label="Map of sites, protests and threats"></div>
-<div class="legend" id="map-legend">{% for item in map.legend %}<span><i class="sw" style="background:{{ item.color }};{% if item.label == 'Defense and civic sites' %}border:1px solid #9aa6b8{% endif %}"></i>{{ item.label }}</span>{% endfor %}
+<div id="dash-map" class="dash-map" role="img" aria-label="Map of Australian sites, protests and threats"></div>
+<div class="legend" id="map-legend">{% for item in map.legend %}<span><i class="sw{% if item.swatch == 'hollow' %} hollow{% endif %}" style="{% if item.swatch == 'hollow' %}border-color:{{ item.color }}{% else %}background:{{ item.color }}{% endif %}"></i>{{ item.label }}</span>{% endfor %}
 <span class="note" id="map-count"></span></div>
-<p class="note">Map tiles © <a href="https://www.esri.com/" rel="noopener noreferrer" target="_blank">Esri</a>; data © OpenStreetMap contributors, HERE, Garmin, FAO, NOAA, USGS.</p>
+<p class="note">Low zoom draws Natural Earth 110m land on a dark navy ocean. Zooming in switches to darkened OpenStreetMap streets. Land © Natural Earth. Streets © OpenStreetMap contributors.</p>
 </section>
 <script type="application/json" id="map-assets">{{ map.assets|tojson }}</script>
+<script type="application/json" id="land-geo">{{ land|tojson }}</script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 (function(){
 if(!window.L)return;
 var assets=JSON.parse(document.getElementById("map-assets").textContent||"[]");
-var map=L.map("dash-map",{scrollWheelZoom:false, attributionControl:true}).setView([-26.5,134.5],4);
-L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",{
-  attribution:'Tiles &copy; <a href="https://www.esri.com/">Esri</a> &mdash; Esri, HERE, Garmin, FAO, NOAA, USGS',
-  maxZoom:16
-}).addTo(map);
-var assetLayer=L.layerGroup().addTo(map), eventLayer=L.layerGroup().addTo(map), threatLayer=L.layerGroup().addTo(map);
-var layers={past:true,upcoming:true,threats:true,alerts:true};
-var cache={events:[],threats:[]};
-function assetIcon(color){
-  return L.divIcon({className:"map-asset",
-    html:'<span class="map-pin" style="background:'+color+';border:2px solid #c8a24a"></span><span class="map-label"></span>',
-    iconSize:[12,12], iconAnchor:[6,6]});
+var au=L.latLngBounds([[-44.8,112.2],[-10.2,154.2]]);
+var map=L.map("dash-map",{scrollWheelZoom:false, attributionControl:true, minZoom:4,
+  maxBounds:au.pad(0.15), maxBoundsViscosity:1});
+var land=JSON.parse(document.getElementById("land-geo").textContent||"{}");
+map.createPane("land");
+map.getPane("land").style.zIndex=210;
+L.geoJSON(land,{pane:"land", interactive:false, style:{
+  color:"#6d88ad", weight:1, fillColor:"#1b3a66", fillOpacity:1
+}}).addTo(map);
+map.createPane("streets");
+map.getPane("streets").style.zIndex=250;
+map.getPane("streets").style.filter="invert(100%) hue-rotate(180deg) brightness(92%) contrast(92%) saturate(18%)";
+var streets=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{
+  pane:"streets", maxZoom:19,
+  attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'});
+function syncBase(){
+  if(map.getZoom()>=7){ if(!map.hasLayer(streets)) streets.addTo(map); }
+  else if(map.hasLayer(streets)) map.removeLayer(streets);
 }
+map.on("zoomend", syncBase);
+function frameAustralia(){
+  if(!assets.length){ map.setView([-25.6,134.3],4); return; }
+  map.fitBounds(L.latLngBounds(assets.map(function(a){return [a.lat,a.lon];})), {padding:[28,28], maxZoom:5});
+}
+frameAustralia();
+setTimeout(function(){ map.invalidateSize(); frameAustralia(); }, 80);
+var glyphs={
+  anchor:'<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M12 2.2a2 2 0 1 0 .01 0zM11 6h2v3h4.2A6.2 6.2 0 0 1 12 15.2 6.2 6.2 0 0 1 6.8 9H11V6zM4 11h2.2a8.2 8.2 0 0 0 11.6 0H20v2h-2.3A10.2 10.2 0 0 1 6.3 13H4v-2z"/></svg>',
+  plane:'<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>',
+  building:'<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M4 21V3h10v6h6v12H4zm2-2h2v-2H6v2zm0-4h2v-2H6v2zm0-4h2V9H6v2zm4 8h2v-2h-2v2zm0-4h2v-2h-2v2zm0-4h2V9h-2v2zm4 8h4v-6h-4v6z"/></svg>',
+  shield:'<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M12 2l8 3v6c0 5-3.4 8.4-8 10-4.6-1.6-8-5-8-10V5l8-3z"/></svg>'
+};
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];});}
+var assetLayer=L.layerGroup().addTo(map), eventLayer=L.layerGroup().addTo(map), threatLayer=L.layerGroup().addTo(map);
+var layers={threats:true,past:true,planned:true,advocacy:true};
+var cache={events:[],threats:[]};
 function placeAssets(){
   assetLayer.clearLayers();
-  var showLabels=map.getZoom()>=5;
   assets.forEach(function(a){
-    var short=a.short||a.label;
-    var html='<span class="map-pin" style="background:'+(a.color||"#fff")+';border:2px solid #c8a24a"></span>'+
-      (showLabels?('<span class="map-label">'+short+'</span>'):'');
-    var ic=L.divIcon({className:"map-asset", html:html, iconSize:showLabels?[120,28]:[14,14], iconAnchor:showLabels?[8,8]:[7,7]});
-    L.marker([a.lat,a.lon],{icon:ic,zIndexOffset:200})
-      .bindPopup('<div style="font-size:13px"><strong>'+a.label+'</strong><br>Defense / civic site</div>')
+    var icon=glyphs[a.icon]||glyphs.building;
+    var html='<span class="site-icon">'+icon+'</span><span class="map-label">'+esc(a.short||a.label)+'</span>';
+    var ic=L.divIcon({className:"map-asset"+(a.side==="left"?" label-left":""), html:html, iconSize:[168,28], iconAnchor:[11,14]});
+    L.marker([a.lat,a.lon],{icon:ic,zIndexOffset:400, keyboard:true, title:a.label})
+      .bindPopup('<div style="font-size:13px"><strong>'+esc(a.label)+'</strong><br>Site</div>')
       .addTo(assetLayer);
   });
 }
 placeAssets();
-map.on("zoomend", placeAssets);
 function popup(e){
-  var html='<div style="font-size:13px"><strong>'+ (e.place||e.label||"Event") +'</strong>';
-  if(e.date) html+='<br>'+e.date+(e.kind==="upcoming"?" (upcoming)":"");
-  if(e.threat_type) html+='<br>Type: '+e.threat_type;
-  if(e.source) html+='<br>Source: '+e.source;
-  if(e.text) html+='<br>'+String(e.text).replace(/[<>&]/g,function(c){return ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]);});
-  if(e.url) html+='<br><a href="'+e.url+'" rel="noopener noreferrer" target="_blank">Open source</a>';
+  var html='<div style="font-size:13px"><strong>'+esc(e.place||e.label||"Event")+'</strong>';
+  if(e.date) html+='<br>'+esc(e.date)+(e.kind==="planned"?" (planned)":"");
+  if(e.threat_type) html+='<br>Type: '+esc(e.threat_type);
+  if(e.source) html+='<br>Source: '+esc(e.source);
+  if(e.text) html+='<br>'+esc(e.text);
+  if(e.url) html+='<br><a href="'+esc(e.url)+'" rel="noopener noreferrer" target="_blank">Open source</a>';
   return html+'</div>';
 }
 function renderEvents(){
   eventLayer.clearLayers(); threatLayer.clearLayers();
   var n=0;
   (cache.events||[]).forEach(function(e){
-    var isUp=e.kind==="upcoming"||e.style==="dashed";
-    var isAlert=e.origin==="alert";
-    if(isUp && !layers.upcoming) return;
-    if(!isUp && isAlert && !layers.alerts) return;
-    if(!isUp && !isAlert && !layers.past) return;
-    var opts={radius:isUp?9:8, color:e.color, fillColor:e.color, fillOpacity:isUp?0.15:0.85, weight:isUp?2:1,
-      dashArray:isUp?"4 3":null};
-    L.circleMarker([e.lat,e.lon],opts).bindPopup(popup(e)).addTo(eventLayer);
+    var kind=e.kind==="upcoming"?"planned":e.kind;
+    if(kind==="planned" && !layers.planned) return;
+    if(kind==="advocacy" && !layers.advocacy) return;
+    if((kind==="past" || kind==="event") && !layers.past) return;
+    var hollow=kind==="planned" || e.style==="hollow";
+    L.circleMarker([e.lat,e.lon],{radius:hollow?9:8, color:e.color, fillColor:e.color,
+      fillOpacity:hollow?0:0.9, weight:hollow?2:1}).bindPopup(popup(e)).addTo(eventLayer);
     n++;
   });
   if(layers.threats){
     (cache.threats||[]).forEach(function(e){
-      var html='<span class="map-threat" style="border-color:'+e.color+';background:'+e.color+'"></span>';
-      var ic=L.divIcon({className:"map-threat-wrap", html:html, iconSize:[14,14], iconAnchor:[7,7]});
-      L.marker([e.lat,e.lon],{icon:ic,zIndexOffset:100}).bindPopup(popup(e)).addTo(threatLayer);
+      L.circleMarker([e.lat,e.lon],{radius:7, color:e.color||"#e23b32", fillColor:e.color||"#e23b32",
+        fillOpacity:0.95, weight:1}).bindPopup(popup(e)).addTo(threatLayer);
       n++;
     });
   }
@@ -100,11 +115,6 @@ function load(days){
   fetch("/api/map?days="+encodeURIComponent(days),{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(data){
     cache.events=data.events||[]; cache.threats=data.threats||[];
     renderEvents();
-    var bounds=[];
-    assets.forEach(function(a){bounds.push([a.lat,a.lon]);});
-    cache.events.forEach(function(e){bounds.push([e.lat,e.lon]);});
-    cache.threats.forEach(function(e){bounds.push([e.lat,e.lon]);});
-    if(bounds.length) map.fitBounds(bounds,{padding:[28,28], maxZoom:6});
     setTimeout(function(){map.invalidateSize();},50);
   }).catch(function(){document.getElementById("map-count").textContent="Could not load map events.";});
 }
@@ -120,61 +130,59 @@ load("{{ map.days if map.days is not none else 'all' }}");
 })();
 </script>
 
-
-<section class="panel" id="threat-trend"><h2>Threats by target and type</h2>
+<section class="panel" id="threat-ranking"><h2>Threat ranking</h2>
 {% if threat_chart and threat_chart.rows %}
-<p class="how">Confirmed threat posts in the selected month, grouped by target and type. Engagement is likes, shares and comments combined.</p>
+<p class="how">{{ threat_chart.grouping }}</p>
+{% if threat_chart.stored_types %}<p class="note">Stored types: {{ threat_chart.stored_types|join(", ") }}. Stored targets: {{ threat_chart.stored_targets|join(", ") }}.</p>{% endif %}
 <div class="bars">{% for row in threat_chart.rows %}
 <div class="bar"><div class="lab">{{ row.label }}</div><div class="track" style="display:flex;align-items:center">
 <div class="fill" style="width:{{ row.pct }}%;background:{{ colors.threat }}"></div>
 <span class="val">{{ row.value }} post{{ "s" if row.value != 1 }} · {{ "{:,}".format(row.engagement) }} eng · {{ row.type }}</span>
 </div></div>{% endfor %}</div>
-{% else %}<p>No reviewed threat targets this month yet.</p>{% endif %}
+{% else %}<p>No stored threat targets this month yet.</p>{% endif %}
 </section>
 
-<p class="intro">Monthly view of threatening language and protest activity in monitored media coverage of the Australia, United Kingdom and United States security partnership (AUKUS) and related defense programs.</p>
+<section class="panel" id="upcoming"><h2>Upcoming protests</h2>
+<p class="how">Planned protests are stored events with a place in Australia and a date after today. They stay listed when the map time range changes. The day buttons filter past markers only.</p>
+{% if upcoming %}
+{% for e in upcoming %}
+<div class="post"><strong>{{ e.date or "Date not stated" }}</strong> — {{ e.place }}
+<span class="src">{{ e.source }}</span>
+{{ e.text }}
+{% if e.url %} <a href="{{ e.url }}" rel="noopener noreferrer" target="_blank">Open source</a>{% endif %}
+</div>
+{% endfor %}
+{% else %}<p>No planned protests with a place and a future date are stored.</p>{% endif %}
+</section>
+
 {% if not has_data %}
-<div class="panel"><p>No Meltwater uploads are stored yet. Upload an export on the main page to populate this dashboard.</p></div>
+<div class="panel" id="volume"><h2>Monthly trend</h2><p>No uploads are stored yet. Upload an export to populate this dashboard.</p></div>
 {% else %}
 <nav class="months" aria-label="Month">{% for m in months %}<a href="?month={{ m.key }}"{% if m.key == month %} aria-current="page"{% endif %}>{{ m.label }}</a>{% endfor %}</nav>
 
-<section class="panel" id="volume"><h2>Threat and protest posts by month</h2>
+<section class="panel" id="volume"><h2>Monthly trend</h2>
 <div class="legend"><span><i class="sw" style="background:{{ colors.threat }}"></i>Threat posts</span><span><i class="sw" style="background:{{ colors.protest }}"></i>Protest posts</span></div>
 <div class="bars">{% for v in volume %}<div class="bar pair"><div class="lab">{{ v.label }}</div><div>
 <div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ v.threat_pct }}%;background:{{ colors.threat }}"></div><span class="val">{{ v.threat }} threat</span></div>
 <div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ v.protest_pct }}%;background:{{ colors.protest }}"></div><span class="val">{{ v.protest }} protest</span></div>
 </div></div>{% endfor %}</div>
-{% for s in summary[:2] %}<p class="finding">{{ s.text }}</p>{% endfor %}
-<p class="how">How to read: each pair of bars counts posts flagged in that month, by post date. Posts can count as both threat and protest.</p></section>
+<p class="finding" id="narrative">{{ narrative }}</p>
+<p class="how">Counts use the stored category field. A post stored as both is counted in each bar. Category text is not renamed or merged.</p>
+</section>
 
-<section class="panel"><h2>{{ month_label }} at a glance</h2><div class="strip">
-{% for k in headline %}<div class="kpi"><div class="v" style="color:{{ k.color }}">{{ k.value }}</div><div class="l">{{ k.label }}</div>
-<div class="d">{% if k.delta is none %}{% if prev_label %}No comparison{% else %}First month on record{% endif %}{% elif k.delta > 0 %}Up {{ k.delta }} from {{ prev_label }}{% elif k.delta < 0 %}Down {{ -k.delta }} from {{ prev_label }}{% else %}Same as {{ prev_label }}{% endif %}</div></div>{% endfor %}
-</div></section>
-
-<section class="panel" id="summary"><h2>Monthly report summary</h2>
-{% for s in summary %}<h3>{{ s.title }}</h3><p>{{ s.text }}</p>{% endfor %}</section>
-
-<div class="grid2">
-<section class="panel"><h2>Threat types by engagement</h2>
-{% if threat_types %}{{ bars(threat_types, colors.threat, "engagements") }}<p class="how">Engagement is likes, shares and comments combined, as reported by Meltwater.</p>{% else %}<p>No reviewed threat types this month.</p>{% endif %}</section>
-<section class="panel"><h2>Top threat targets</h2>
-{% if targets %}{{ bars(targets, colors.threat) }}{% else %}<p>No targets identified this month.</p>{% endif %}</section>
-<section class="panel"><h2>Most-named people</h2>
-{% if people %}{{ bars(people, colors.threat) }}<p class="how">Named in threat or protest posts this month.</p>{% else %}<p>No named people this month.</p>{% endif %}</section>
-</div>
-
-
-<section class="panel" id="flagged-posts"><h2>Top flagged posts this month</h2>
-<p class="how">Mark posts Relevant or Not relevant. Not relevant items are hidden unless you show them. Labels train the next review pass.</p>
+<section class="panel" id="flagged-posts"><h2>Flagged posts this month</h2>
+<p class="how">The post text sits beside Relevant and Not relevant. Not relevant items are hidden unless you show them.</p>
 {% if flagged_sample %}
 {% for post in flagged_sample %}
 {% set plabel = relevance_labels.get('post:' ~ (post.doc_id|string), '') %}
-<div class="post {% if plabel=='not_relevant' %}item-hidden{% endif %}" data-item-type="post" data-item-id="{{ post.doc_id }}" data-source="meltwater" data-label="{{ plabel }}" {% if plabel=='not_relevant' %}hidden{% endif %}>
+<div class="post post-row {% if plabel=='not_relevant' %}item-hidden{% endif %}" data-item-type="post" data-item-id="{{ post.doc_id }}" data-source="{{ post.source }}" data-label="{{ plabel }}" {% if plabel=='not_relevant' %}hidden{% endif %}>
+<div class="post-text">
 {% if post.type %}<span class="tag">{{ post.type }}</span> {% endif %}
+<span class="src">{{ post.source }}</span>
 <strong>{{ post.author or "Unknown" }}</strong>
-{{ post.summary or post.text }}
+{{ post.text or post.summary }}
 {% if post.link %} <a href="{{ post.link }}" rel="noopener noreferrer" target="_blank">Open post</a>{% endif %}
+</div>
 <div class="rel-btns" role="group" aria-label="Relevance">
 <button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if plabel=='relevant' else 'false' }}">Relevant</button>
 <button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if plabel=='not_relevant' else 'false' }}">Not relevant</button>
@@ -184,52 +192,36 @@ load("{{ map.days if map.days is not none else 'all' }}");
 </section>
 
 <section class="panel" id="posters"><h2>Recurring threat posters</h2>
-{% if posters %}<p class="how">Accounts with two or more threat posts this month. Open an account to read its posts.</p>
+{% if posters %}<p class="how">Accounts with two or more threat posts this month.</p>
 {% for p in posters %}<details><summary><strong>{{ p.name or p.handle }}</strong>{% if p.handle and p.name %} ({{ p.handle }}){% endif %}: {{ p.count }} threat posts, {{ "{:,}".format(p.engagement) }} engagements</summary>
 <div class="body"><p class="note">First seen {{ p.first }}, last seen {{ p.last }}</p>
 {% for post in p.posts %}
-{% set pid = post.doc_id or post.document_id or '' %}
+{% set pid = post.doc_id or '' %}
 {% set plabel = relevance_labels.get('post:' ~ pid, '') if pid else '' %}
-<div class="post {% if plabel=='not_relevant' %}item-hidden{% endif %}" {% if pid %}data-item-type="post" data-item-id="{{ pid }}" data-source="meltwater" data-label="{{ plabel }}"{% if plabel=='not_relevant' %} hidden{% endif %}{% endif %}>
-{% if post.type %}<span class="tag">{{ post.type }}</span> {% endif %}{{ post.summary or post.text }}{% if post.link %} <a href="{{ post.link }}" rel="noopener noreferrer" target="_blank">Open post</a>{% endif %}
+<div class="post post-row {% if plabel=='not_relevant' %}item-hidden{% endif %}" {% if pid %}data-item-type="post" data-item-id="{{ pid }}" data-source="{{ post.source }}" data-label="{{ plabel }}"{% if plabel=='not_relevant' %} hidden{% endif %}{% endif %}>
+<div class="post-text">{% if post.type %}<span class="tag">{{ post.type }}</span> {% endif %}<span class="src">{{ post.source }}</span>{{ post.text or post.summary }}{% if post.link %} <a href="{{ post.link }}" rel="noopener noreferrer" target="_blank">Open post</a>{% endif %}</div>
 {% if pid %}<div class="rel-btns" role="group" aria-label="Relevance"><button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if plabel=='relevant' else 'false' }}">Relevant</button>
 <button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if plabel=='not_relevant' else 'false' }}">Not relevant</button></div>{% endif %}
 </div>{% endfor %}
 </div></details>{% endfor %}{% else %}<p>No account posted threat language more than once this month.</p>{% endif %}</section>
-
-<div class="grid2">
-<section class="panel"><h2>Protest locations</h2>{% if protest_locations %}{{ bars(protest_locations, colors.protest) }}{% else %}<p>No protest locations this month.</p>{% endif %}</section>
-<section class="panel"><h2>Protest topics</h2>{% if protest_topics %}{{ bars(protest_topics, colors.protest) }}{% else %}<p>No protest topics this month.</p>{% endif %}</section>
-<section class="panel"><h2>Protest organizers and groups</h2>{% if organizers %}{{ bars(organizers, colors.protest) }}{% else %}<p>No organizers identified this month.</p>{% endif %}</section>
-</div>
-
-<section class="panel" id="heat"><h2>Most heated topics</h2>
-{% if heat %}<div class="bars">{% for h in heat %}<div class="bar"><div class="lab">{{ h.label }}</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ h.pct }}%;background:{{ colors.threat }}"></div><span class="val">{{ h.avg }} of 10, {{ h.posts }} post{{ "s" if h.posts != 1 }}</span></div></div>{% endfor %}</div>
-<p class="how">Average heat score from 0 (calm) to 10 (most heated) across scored posts; bar length is out of 10.</p>{% else %}<p>No heat-scored posts this month.</p>{% endif %}</section>
 {% endif %}
 
-{% if noisy_terms %}
-<section class="panel" id="noisy-terms"><h2>Noisiest sources (from your labels)</h2>
-<p class="how">Precision is relevant ÷ (relevant + not relevant). Lower precision means more noise.</p>
-<table><thead><tr><th>Source</th><th>Relevant</th><th>Not relevant</th><th>Precision</th></tr></thead>
-<tbody>{% for t in noisy_terms %}<tr><td>{{ t.term }}</td><td>{{ t.relevant }}</td><td>{{ t.not_relevant }}</td><td>{{ t.precision }}</td></tr>{% endfor %}</tbody></table>
-</section>
-{% endif %}
 <section class="panel" id="early-warning"><h2>Early warning from monitored channels</h2>
-<p class="how">A separate layer of alerts from X, Bluesky, Facebook, Instagram, newsletters, Seerist reports and web/RSS sources. These alerts are not counted in any Meltwater total above.</p>
-{% if alerts.items %}
-<p class="finding">{{ alerts.total }} alert{{ "s" if alerts.total != 1 }}; {{ alerts.confirmed }} later confirmed in Meltwater{% if alerts.median_lead %}, a median {{ alerts.median_lead }} earlier{% endif %}.</p>
+<p class="how">Alerts from monitored channels are kept separate. They are not added to the threat, protest, or monthly totals above.</p>
+{% if alerts['items'] %}
+<p class="finding">{{ alerts.total }} alert{{ "s" if alerts.total != 1 }}; {{ alerts.confirmed }} later matched a stored export{% if alerts.median_lead %}, a median {{ alerts.median_lead }} earlier{% endif %}.</p>
 <div class="bars">{% for b in alerts.by_source %}<div class="bar"><div class="lab">{{ b.label }}</div><div class="track" style="display:flex;align-items:center"><div class="fill" style="width:{{ b.pct }}%;background:{{ b.color }}"></div><span class="val">{{ b.value }} alert{{ "s" if b.value != 1 }}</span></div></div>{% endfor %}</div>
 {% for a in alerts['items'] %}
 {% set alabel = relevance_labels.get('alert:' ~ (a.id|string), '') %}
 <details class="{{ 'item-hidden' if alabel == 'not_relevant' else '' }}" data-item-type="alert" data-item-id="{{ a.id }}" data-source="{{ a.source }}" data-label="{{ alabel }}" {% if alabel == 'not_relevant' %}hidden{% endif %}><summary><span class="chip" style="background:{{ signal_colors[a.signal_level] }}">{{ a.signal_level|capitalize }}</span>
 <span class="chip" style="background:{{ source_colors[a.source] }}">{{ source_labels[a.source] }}</span>
-{{ a.author or "Unknown author" }}{% if a.confirmed %} <span class="ok">Confirmed in Meltwater{% if a.lead %}, {{ a.lead }} earlier{% endif %}</span>{% endif %}</summary>
-<div class="body"><p class="note">First seen {{ a.first_seen }}</p>{% if a.text %}<p style="white-space:pre-line;overflow-wrap:anywhere">{{ a.text }}</p>{% endif %}
+{{ a.author or "Unknown author" }}{% if a.confirmed %} <span class="ok">Matched a stored export{% if a.lead %}, {{ a.lead }} earlier{% endif %}</span>{% endif %}</summary>
+<div class="body"><p class="note">First seen {{ a.first_seen }}</p>
+<div class="post-row"><div class="post-text">{% if a.text %}<p style="white-space:pre-line;overflow-wrap:anywhere">{{ a.text }}</p>{% endif %}</div>
+<div class="rel-btns" role="group" aria-label="Relevance"><button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if alabel=='relevant' else 'false' }}">Relevant</button>
+<button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if alabel=='not_relevant' else 'false' }}">Not relevant</button></div></div>
 {% for t in a.terms %}<span class="tag">{{ t }}</span>{% endfor %}
 {% if a.url %}<p><a href="{{ a.url }}" rel="noopener noreferrer" target="_blank">Open source post</a></p>{% endif %}
-<div class="rel-btns" role="group" aria-label="Relevance"><button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if alabel=='relevant' else 'false' }}">Relevant</button>
-<button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if alabel=='not_relevant' else 'false' }}">Not relevant</button></div>
 <form method="post" action="/alerts/{{ a.id }}/delete" onsubmit="return confirm('Delete this alert?')"><button class="btn danger" type="submit">Delete alert</button></form></div></details>{% endfor %}
 {% else %}<p>No early-warning alerts received yet.</p>{% endif %}</section>
 {% endblock %}

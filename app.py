@@ -131,11 +131,6 @@ def create_app() -> Flask:
         except Exception:
             return {"recent_downloads": []}
 
-    try:
-        jobs.reclaim_orphans_on_boot()
-    except Exception:
-        pass
-
     @app.route("/login", methods=["GET", "POST"])
     def login():
         return redirect(_safe_next(request.values.get("next")))
@@ -174,23 +169,8 @@ def create_app() -> Flask:
         if wants_job:
             names = ", ".join(n for n, _ in files)[:300]
             rows_hint = _count_rows(files)
-            def work(progress):
-                t0 = time.monotonic()
-                progress("File accepted", 0, rows_hint or 0)
-                try:
-                    result = process(files, progress=progress)
-                except ValueError as exc:
-                    raise ValueError(_public_error(exc)) from exc
-                except Exception as exc:
-                    app.logger.warning("Upload failed: %s", type(exc).__name__)
-                    raise ValueError("Could not read the uploaded file(s).") from exc
-                progress("Building the Excel export", len(result.all_posts), len(result.all_posts))
-                payload = to_workbook(result)
-                app.logger.info("Screened %d posts in %.1fs", len(result.all_posts), time.monotonic() - t0)
-                return {"payload": payload, "rows": len(result.all_posts),
-                        "message": (f"File accepted: {names}. Screened {len(result.all_posts)} posts; "
-                                    f"{len(result.flagged)} flagged. The dashboard has been updated.")}
-            jid = jobs.start("screen", work, filenames=names, rows=rows_hint)
+            work = _screen_work(files)
+            jid = jobs.start("screen", work, filenames=names, rows=rows_hint, inputs=list(files))
             return {"job": jid, "filenames": names, "rows": rows_hint}, 202
         try:
             result = process(files)
@@ -342,6 +322,44 @@ def create_app() -> Flask:
             return {"error": str(exc)}, 400
         alert_id, created = st.add_alert(alert)
         return {"id": alert_id, "duplicate": not created}, 201 if created else 200
+
+    def _screen_work(files):
+        names = ", ".join(n for n, _ in files)[:300]
+
+        def work(progress):
+            t0 = time.monotonic()
+            try:
+                result = process(files, progress=progress)
+            except ValueError as exc:
+                raise ValueError(_public_error(exc)) from exc
+            except Exception as exc:
+                app.logger.warning("Upload failed: %s", type(exc).__name__)
+                raise ValueError("Could not read the uploaded file(s).") from exc
+            # Release the raw upload now that it has been read. The database copy remains for resume.
+            for i in range(len(files)):
+                files[i] = (files[i][0], b"")
+            screened = result.screened_rows or len(result.all_posts)
+            progress("Building the Excel export", screened, screened)
+            payload = to_workbook(result)
+            app.logger.info("Screened %d posts in %.1fs", screened, time.monotonic() - t0)
+            return {"payload": payload, "rows": screened,
+                    "message": (f"File accepted: {names}. Screened {screened} posts; "
+                                f"{len(result.flagged)} flagged. The dashboard has been updated.")}
+
+        return work
+
+    jobs.set_resume_factory(_screen_work)
+    try:
+        jobs.resume_pending()
+    except Exception:
+        app.logger.warning("Could not resume an interrupted upload")
+    try:
+        st = _storage()
+        if st is not None:
+            from triage.origin import backfill_sources
+            backfill_sources(st)
+    except Exception:
+        app.logger.warning("Could not backfill post sources")
 
     return app
 

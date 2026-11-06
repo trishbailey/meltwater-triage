@@ -32,25 +32,39 @@ geocode_cache = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
-# Fixed defense and civic assets (label, lat, lon).
+# Fixed defense and civic assets (label, lat, lon, kind).
+# kind selects the icon: anchor (naval/port), plane (air), building (HQ/shipyard/industry),
+# shield (army/base). Civic sites use the building icon.
 ASSETS = [
-    ("Osborne Naval Shipyard", -34.788, 138.506),
-    ("HMAS Stirling", -32.24, 115.69),
-    ("Henderson", -32.163, 115.778),
-    ("Pine Gap", -23.799, 133.726),
-    ("RAAF Tindal", -14.52, 132.38),
-    ("Australian Submarine Agency HQ (Majura Park)", -35.2997, 149.1886),
-    ("BAE Systems Edinburgh", -34.7199, 138.6532),
-    ("Russell Offices", -35.2981, 149.1510),
-    ("US Embassy Canberra", -35.3064, 149.1167),
-    ("US Consulate Sydney", -33.8401, 151.2064),
-    ("US Consulate Melbourne", -37.8469, 144.9801),
-    ("Naval Communication Station Harold Holt", -21.8187, 114.1647),
-    ("HMAS Kuttabul", -33.8672, 151.2263),
-    ("NSW Parliament", -33.8673, 151.2127),
-    ("Sydney Town Hall", -33.8732, 151.2062),
-    ("Perth Convention and Exhibition Centre", -31.9566, 115.8524),
+    ("Osborne Naval Shipyard", -34.788, 138.506, "shipyard"),
+    ("HMAS Stirling", -32.24, 115.69, "naval"),
+    ("Henderson", -32.163, 115.778, "shipyard"),
+    ("Pine Gap", -23.799, 133.726, "base"),
+    ("RAAF Tindal", -14.52, 132.38, "air"),
+    ("Australian Submarine Agency HQ (Majura Park)", -35.2997, 149.1886, "hq"),
+    ("BAE Systems Edinburgh", -34.7199, 138.6532, "industry"),
+    ("Russell Offices", -35.2981, 149.1510, "hq"),
+    ("US Embassy Canberra", -35.3064, 149.1167, "hq"),
+    ("US Consulate Sydney", -33.8401, 151.2064, "hq"),
+    ("US Consulate Melbourne", -37.8469, 144.9801, "hq"),
+    ("Naval Communication Station Harold Holt", -21.8187, 114.1647, "naval"),
+    ("HMAS Kuttabul", -33.8672, 151.2263, "naval"),
+    ("NSW Parliament", -33.8673, 151.2127, "hq"),
+    ("Sydney Town Hall", -33.8732, 151.2062, "hq"),
+    ("Perth Convention and Exhibition Centre", -31.9566, 115.8524, "hq"),
 ]
+
+# Icon family for each site kind. White glyph on a blue disc; always shown.
+ICON_FOR_KIND = {
+    "naval": "anchor", "port": "anchor",
+    "air": "plane",
+    "hq": "building", "shipyard": "building", "industry": "building", "civic": "building",
+    "army": "shield", "base": "shield",
+}
+
+# Australia-only view. Markers outside this box are not drawn.
+AU_SOUTH, AU_NORTH = -45.0, -9.0
+AU_WEST, AU_EAST = 110.0, 155.5
 
 # Built-in Australian city / region centroids used when Nominatim misses or is offline.
 CITY_CENTROIDS = {
@@ -110,12 +124,29 @@ CITY_CENTROIDS = {
     "united kingdom": (55.3781, -3.4360),
 }
 
-# Asset markers (cyan) vs event markers (amber) — CIEDE2000 well above 20 on dark UI.
-ASSET_COLOR = "#ffffff"
-EVENT_COLOR = "#ff8a1f"
-EVENT_ALERT_COLOR = "#ff4fd8"
-UPCOMING_COLOR = "#6b8cff"
-THREAT_MAP_COLOR = "#c92f24"
+# Site discs are blue with a white glyph. Event fills are red / orange / purple.
+ASSET_COLOR = "#1f6feb"
+EVENT_COLOR = "#ff8a1f"          # past protest, filled
+EVENT_ALERT_COLOR = "#c792ea"    # advocacy
+UPCOMING_COLOR = "#ff8a1f"       # planned protest, hollow stroke
+THREAT_MAP_COLOR = "#e23b32"
+ADVOCACY_COLOR = "#c792ea"
+
+
+def australia_land() -> dict:
+    """Natural Earth 110m Australia outline (public domain), for the low-zoom basemap."""
+    import json
+    from pathlib import Path
+    path = Path(__file__).with_name("australia_110m.geojson")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def in_australia(lat: float, lon: float) -> bool:
+    return AU_SOUTH <= lat <= AU_NORTH and AU_WEST <= lon <= AU_EAST
+
+
+def icon_for(kind: str) -> str:
+    return ICON_FOR_KIND.get(kind or "", "building")
 
 
 def _eng():
@@ -235,6 +266,30 @@ def geocode(place: str) -> dict | None:
     return None
 
 
+_SHORT = {
+    "Osborne Naval Shipyard": "Osborne",
+    "Australian Submarine Agency HQ (Majura Park)": "ASA Majura",
+    "BAE Systems Edinburgh": "BAE Edinburgh",
+    "Naval Communication Station Harold Holt": "Harold Holt",
+    "Perth Convention and Exhibition Centre": "Perth CEC",
+    "US Embassy Canberra": "US Embassy",
+    "US Consulate Sydney": "US Consulate SYD",
+    "US Consulate Melbourne": "US Consulate MEL",
+}
+# Nudge labels apart where sites sit on top of each other at country zoom.
+_SIDE = {
+    "US Consulate Sydney": "left",
+    "NSW Parliament": "left",
+    "Sydney Town Hall": "right",
+    "Russell Offices": "left",
+    "US Embassy Canberra": "right",
+    "Australian Submarine Agency HQ (Majura Park)": "right",
+}
+
+
 def asset_markers() -> list[dict]:
-    return [{"kind": "asset", "label": name, "lat": lat, "lon": lon, "color": ASSET_COLOR}
-            for name, lat, lon in ASSETS]
+    return [{
+        "kind": "asset", "label": name, "short": _SHORT.get(name, name),
+        "lat": lat, "lon": lon, "site_kind": site_kind, "icon": icon_for(site_kind),
+        "side": _SIDE.get(name, "right"), "color": ASSET_COLOR, "always": True,
+    } for name, lat, lon, site_kind in ASSETS]

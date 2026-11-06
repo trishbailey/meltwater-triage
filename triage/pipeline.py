@@ -12,7 +12,7 @@ from . import keywords as kw
 from .aggregate import heat_by_topic, recurring_threat_posters
 from .budget import resolve_budget
 from .excel_safe import write_sheets
-from .filters import _file_label, _find_columns, combine_uploads, screen_dataframe
+from .filters import _file_label, _find_columns, iter_upload_chunks, screen_dataframe
 from .heat import analyze_heat
 from .refine import refine
 from .storage import persistence_enabled
@@ -33,6 +33,7 @@ class Result:
     topics: pd.DataFrame
     run_id: int | None = None
     notes: list[str] = field(default_factory=list)
+    screened_rows: int = 0
 
 
 def _open_storage(storage):
@@ -58,21 +59,87 @@ def _drop_row_id(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=_ROW_ID) if _ROW_ID in df.columns else df
 
 
+def _screen_files(files, report) -> tuple[pd.DataFrame, int]:
+    """Screen in chunks so the raw sheet and a second full copy are not held together.
+
+    When the file is larger than the heat cap (and SCREEN_KEEP_ROWS), rows that are
+    neither flagged nor in the engagement sample are dropped before review. The
+    returned count is still every row that was screened.
+    """
+    from .filters import Patterns
+    patterns = Patterns()
+    parts = []
+    for raw in iter_upload_chunks(files):
+        part = screen_dataframe(raw, patterns)
+        parts.append(part)
+        report("Screening posts", sum(len(p) for p in parts), 0)
+        del raw
+    if not parts:
+        raise ValueError("No non-empty worksheets found in the uploaded files.")
+    screened = pd.concat(parts, ignore_index=True)
+    del parts
+    screened[_ROW_ID] = range(len(screened))
+    return _limit_working_set(screened)
+
+
+def _limit_working_set(screened: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    total = len(screened)
+    cap = _heat_cap()
+    try:
+        keep_under = max(cap, int(os.environ.get("SCREEN_KEEP_ROWS", "2500")))
+    except ValueError:
+        keep_under = max(cap, 2500)
+    if total <= keep_under:
+        return screened, total
+    eng_col = next((c for c in screened.columns if str(c).strip().lower() == "engagement"), None)
+    eng = (pd.to_numeric(screened[eng_col], errors="coerce").fillna(0) if eng_col is not None
+           else pd.Series(0, index=screened.index))
+    top = set(eng.sort_values(ascending=False, kind="stable").head(max(cap, 0)).index)
+    flagged = set(screened.index[screened["category"].fillna("").astype(str) != ""])
+    slim = screened.loc[screened.index.isin(top | flagged)].copy()
+    return slim, total
+
+
+def backfill_flagged(storage, complete=None) -> int:
+    """Review flagged posts that have no stored review, and merge the result.
+
+    Does not delete posts. Returns how many rows were updated. With no completion
+    function and no API key, returns 0.
+    """
+    from .refine import is_enabled, refine
+    posts = storage.load_posts(flagged_only=True)
+    if posts.empty:
+        return 0
+    refined = posts["refined_category"] if "refined_category" in posts.columns else pd.Series("", index=posts.index)
+    need = posts[refined.fillna("").astype(str).str.strip().eq("")].copy()
+    if need.empty:
+        return 0
+    if complete is None and not is_enabled():
+        return 0
+    text_cols = _find_columns(need, kw.TEXT_COLUMN_OPTIONS)
+    reviewed = refine(need, text_cols, complete=complete)
+    updated = 0
+    for rec in reviewed.to_dict(orient="records"):
+        if not rec.get("refined_category") and rec.get("is_genuine") is None:
+            continue
+        if storage.merge_review(rec):
+            updated += 1
+    return updated
+
+
 def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storage=None,
             progress=None) -> Result:
     """progress(stage, done, total) is called as posts move through the pipeline."""
     report = progress or (lambda *a: None)
     report("Reading file", 0, 0)
-    df = combine_uploads(files)
-    text_cols = _find_columns(df, kw.TEXT_COLUMN_OPTIONS)
-    screened = screen_dataframe(df)
-    screened[_ROW_ID] = range(len(screened))
+    screened, total_rows = _screen_files(files, report)
+    text_cols = _find_columns(screened, kw.TEXT_COLUMN_OPTIONS)
     storage, storage_failed = _open_storage(storage)
     # Review spends the monthly allowance first; heat uses whatever remains.
     budget = resolve_budget(storage, open_storage=False)
     flagged = screened.loc[screened["category"] != ""].copy()
-    total = len(screened)
-    report("Screening posts", 0, total)
+    total = total_rows
+    report("Screening posts", total, total)
     counter = {"done": 0}
     lock = threading.Lock()
 
@@ -101,6 +168,7 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
                          progress=tick("Reviewing flagged posts", len(refine_need)))
     reuse_mod.remember_batch(index, refined_new, text_cols, kind="refine")
     refined_deferred = _fill_deferred(refine_deferred, refined_new, text_cols, kind="refine")
+    same_file = 0 if refine_deferred is None else len(refine_deferred)
     flagged = _combine_parts(flagged, [refined_new, refine_reused, refined_deferred], REFINE_COLUMNS)
 
     heat_total = min(total, _heat_cap())
@@ -125,10 +193,15 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
     screened = _drop_row_id(screened)
     flagged = _drop_row_id(flagged).reset_index(drop=True)
     res = Result(flagged=flagged, all_posts=screened,
-                 posters=recurring_threat_posters(flagged), topics=heat_by_topic(screened))
+                 posters=recurring_threat_posters(flagged), topics=heat_by_topic(screened),
+                 screened_rows=total)
+    if same_file:
+        res.notes.append(
+            f"Reused one review for {same_file} same-file repost"
+            f"{'' if same_file == 1 else 's'} with the same text.")
     if refine_skipped or heat_skipped:
         res.notes.append(
-            f"Skipped Claude for {refine_skipped} already-classified flagged post"
+            f"Skipped a new review for {refine_skipped} already-classified flagged post"
             f"{'' if refine_skipped == 1 else 's'}"
             f" and {heat_skipped} already heat-scored post"
             f"{'' if heat_skipped == 1 else 's'} (matched by document id, URL, or same text).")
@@ -141,7 +214,7 @@ def process(files: list[tuple[str, bytes]], refine_fn=None, heat_fn=None, storag
         from .storage import rows_to_store
         try:
             res.run_id = storage.save_run(
-                rows_to_store(screened, flagged), [_file_label(n) for n, _ in files], len(df))
+                rows_to_store(screened, flagged), [_file_label(n) for n, _ in files], total)
         except Exception as exc:  # never lose the user's download because storage failed
             log.error("Saving run failed: %s", type(exc).__name__)
             res.notes.append("Results were not saved to the database.")

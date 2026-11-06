@@ -137,9 +137,10 @@ def test_dashboard_renders_with_data(client):
     client.post("/api/alerts", json=ALERT, headers=bearer())
     login(client)
     html = client.get("/dashboard?month=2026-10", headers=auth()).get_data(as_text=True)
-    for s in ("Recurring threat posters", "Early warning", "Monthly report summary", "Perth", "AUKUS",
-              "not counted in any Meltwater total"):
+    for s in ("Recurring threat posters", "Early warning", "Threat ranking", "Monthly trend",
+              "Upcoming protests", "post-row", "not added to the threat, protest, or monthly totals"):
         assert s in html
+    assert "Trish" not in html and "google-analytics" not in html
     status = client.get("/status", headers=auth()).get_data(as_text=True)
     assert "2026-10" in status
 
