@@ -56,13 +56,13 @@
 {% macro section(s, title, anchor, noun) %}
 <section class="panel" id="{{ anchor }}">
 <div class="sec-head"><h2>{{ title }} <span class="note">{{ s.count }} post{{ "s" if s.count != 1 }}</span></h2>
-<a class="btn dl-btn" href="{{ s.download }}" download data-noun="{{ noun }}"{% if not s.relevant %} aria-disabled="true"{% endif %}>Download <span class="dl-n">{{ s.relevant }}</span> relevant {{ noun }} post<span class="dl-s">{{ "s" if s.relevant != 1 }}</span> (Excel)</a></div>
+<a class="btn dl-btn" href="{{ s.download }}" download data-noun="{{ noun }}"{% if not s.relevant %} aria-disabled="true"{% endif %}><span class="dl-label">Download <span class="dl-n">{{ s.relevant }}</span> relevant {{ noun }} post<span class="dl-s">{{ "s" if s.relevant != 1 }}</span> (Excel)</span></a></div>
 {% if s.count %}
 <p class="note">{{ s.reviewed }} reviewed by AI{% if s.pending %}, {{ s.pending }} pre-sorted and waiting for review{% endif %}. Similar posts are grouped: mark a group once to label every post in it, or open it to mark posts one by one. The download contains only the posts marked Relevant, with the raw data and the AI analysis.</p>
-<details class="flagged" open><summary><strong>AI-reviewed posts</strong> ({{ s.reviewed }} posts in {{ s.groups_total }} group{{ "s" if s.groups_total != 1 }})</summary>
+<details class="flagged" open><summary><strong>AI-reviewed posts</strong> ({{ s.reviewed }} post{{ "s" if s.reviewed != 1 }} in {{ s.groups_total }} group{{ "s" if s.groups_total != 1 }})</summary>
 <div class="body">{% for g in s.groups %}{{ group_card(g) }}{% endfor %}
 {% if not s.groups %}<p class="note">No AI-reviewed posts yet.</p>{% endif %}</div></details>
-{% if s.pending %}<details class="flagged"><summary><strong>Waiting for AI review</strong> ({{ s.pending }} posts in {{ s.pending_groups_total }} group{{ "s" if s.pending_groups_total != 1 }})</summary>
+{% if s.pending %}<details class="flagged"><summary><strong>Waiting for AI review</strong> ({{ s.pending }} post{{ "s" if s.pending != 1 }} in {{ s.pending_groups_total }} group{{ "s" if s.pending_groups_total != 1 }})</summary>
 <div class="body">{% for g in s.pending_groups %}{{ group_card(g) }}{% endfor %}</div></details>{% endif %}
 {% if s.more %}<p class="note">Showing the newest groups. {{ s.more }} more posts are not listed.</p>{% endif %}
 <div class="analysis" data-color="{{ s.color }}">
