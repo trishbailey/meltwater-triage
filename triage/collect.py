@@ -22,6 +22,19 @@ log = logging.getLogger(__name__)
 # twice a day (every 12 hours), so the default is 16 hours (the longest gap between the 06:00 and 20:00 UTC runs is 14); duplicates are dropped by URL.
 WINDOW_HOURS = int(os.environ.get("COLLECT_WINDOW_HOURS", "16"))
 WINDOW = f"{WINDOW_HOURS} hours"
+
+
+def since_time(now: datetime | None = None) -> datetime:
+    """Start of the pull window, never earlier than the dashboard start date (default 1 November)."""
+    from . import unified
+    return max((now or datetime.now(timezone.utc)) - timedelta(hours=WINDOW_HOURS), unified.start())
+
+
+def apify_window(now: datetime | None = None) -> str:
+    """Apify's onlyPostsNewerThan: the relative window, or the start date when that is earlier."""
+    from . import unified
+    cur = now or datetime.now(timezone.utc)
+    return WINDOW if cur - timedelta(hours=WINDOW_HOURS) >= unified.start() else unified.start().strftime("%Y-%m-%d")
 RESULTS_PER_ACCOUNT = 10
 
 INSTAGRAM_ACCOUNTS = [
@@ -115,7 +128,7 @@ def bluesky_alerts(handle: str, password: str, queries=BLUESKY_QUERIES, fetch=_h
     session = fetch("https://bsky.social/xrpc/com.atproto.server.createSession",
                     {"identifier": handle, "password": password}, None, 30)
     auth = {"Authorization": f"Bearer {session['accessJwt']}"}
-    since = ((now or datetime.now(timezone.utc)) - timedelta(hours=WINDOW_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = since_time(now).strftime("%Y-%m-%dT%H:%M:%SZ")
     out, seen = [], set()
     for q in queries:
         params = urllib.parse.urlencode({"q": q, "since": since, "limit": 100, "sort": "latest"})
@@ -145,7 +158,7 @@ def x_token(env) -> str:
 def x_alerts(token: str, fetch=_http, now: datetime | None = None, top_n: int = 10,
              queries=None) -> list[dict]:
     """Boolean searches (protest, threat), each limited to `top_n` posts since the last window."""
-    since = ((now or datetime.now(timezone.utc)) - timedelta(hours=WINDOW_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = since_time(now).strftime("%Y-%m-%dT%H:%M:%SZ")
     out, seen = [], set()
     for query, order in (queries or X_QUERIES):
         params = urllib.parse.urlencode({
@@ -184,11 +197,11 @@ def collect(storage, fetch=_http, env=None, now: datetime | None = None) -> dict
     if token:
         jobs.append(("instagram", lambda: instagram_alerts(run_actor(
             ACTOR_INSTAGRAM, {"username": INSTAGRAM_ACCOUNTS, "resultsLimit": RESULTS_PER_ACCOUNT,
-                              "onlyPostsNewerThan": WINDOW, "dataDetailLevel": "basicData",
+                              "onlyPostsNewerThan": apify_window(now), "dataDetailLevel": "basicData",
                               "skipPinnedPosts": False, "includeMusicData": False}, token, fetch))))
         jobs.append(("facebook", lambda: facebook_alerts(run_actor(
             ACTOR_FACEBOOK, {"startUrls": [{"url": u} for u in FACEBOOK_PAGES],
-                             "resultsLimit": RESULTS_PER_ACCOUNT, "onlyPostsNewerThan": WINDOW,
+                             "resultsLimit": RESULTS_PER_ACCOUNT, "onlyPostsNewerThan": apify_window(now),
                              "captionText": False}, token, fetch))))
     else:
         summary["instagram"] = summary["facebook"] = "skipped: APIFY_TOKEN not set"
