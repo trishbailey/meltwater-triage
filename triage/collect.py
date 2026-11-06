@@ -159,6 +159,12 @@ def collect(storage, fetch=_http, env=None, now: datetime | None = None) -> dict
     return summary
 
 
+def review_backlog(storage) -> int:
+    """Have Claude review flagged posts that have no stored review yet (respects the monthly cap)."""
+    from .pipeline import backfill_flagged
+    return backfill_flagged(storage)
+
+
 def _slot(now: datetime, hours: list[int]) -> str:
     """Identifier of the most recent scheduled slot at or before `now` (UTC)."""
     day = now.date()
@@ -196,6 +202,10 @@ def start_scheduler(storage, logger=log, env=None, sleep=None):
                 logger.info("collection %s: %s", slot, collect(storage))
             except Exception:  # noqa: BLE001
                 logger.exception("collection %s failed", slot)
+            try:
+                logger.info("review %s: %d posts reviewed", slot, review_backlog(storage))
+            except Exception:  # noqa: BLE001
+                logger.exception("review %s failed", slot)
 
     t = threading.Thread(target=loop, name="collector", daemon=True)
     t.start()

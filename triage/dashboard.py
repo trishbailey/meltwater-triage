@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .filters import DROPPED_PROTEST_STATUSES
+from .grouping import group_indices
 from .export import (PROTEST_CATS, THREAT_CATS, author_handle, is_rejected, post_text)
 from .origin import origin_label
 from .taxonomy import canon_targets, canon_topic
@@ -25,7 +27,7 @@ SOURCE_LABELS = {"x": "X", "bluesky": "Bluesky", "facebook": "Facebook",
 # One-hue red ramp (lighter = less severe), most severe first.
 SIGNAL_COLORS = {"critical": "#ff4d3d", "high": "#e8705f", "medium": "#d99a8f", "low": "#f0c9c2"}
 TOP_N = 8
-MAX_POSTS = 150
+MAX_GROUPS = 120
 POST_CHARS = 700
 PENDING = "Not yet reviewed"
 
@@ -72,6 +74,8 @@ def _view(df: pd.DataFrame, labels: dict) -> list[dict]:
     for rec in df.to_dict(orient="records"):
         if is_rejected(rec.get("is_genuine")):
             continue
+        if _s(rec.get("category")) == "protest" and _s(rec.get("mobilization_status")) in DROPPED_PROTEST_STATUSES:
+            continue  # advocacy campaigns and past-event recaps are not flagged any more
         kind = _s(rec.get("item_type")) or "post"
         item_id = _s(rec.get("item_id")) or _s(rec.get("document_id")) or _s(rec.get("Document ID"))
         when = _when(rec)
@@ -144,18 +148,35 @@ def _sorted_posts(rows: list[dict]) -> list[dict]:
                   reverse=True)
 
 
-def _section(rows: list[dict], kind: str) -> dict:
+def _groups(rows: list[dict], kind: str) -> list[dict]:
+    """Near-duplicate posts in one group: the newest post represents the group."""
     ordered = _sorted_posts(rows)
+    idx = group_indices([r["text"] for r in ordered], [r["link"] for r in ordered])
+    out = []
+    for g in idx:
+        members = [_post_card(ordered[i], kind) for i in g]
+        labels_ = {m["label"] for m in members}
+        out.append({"rep": members[0], "members": members, "n": len(members),
+                    "label": labels_.pop() if len(labels_) == 1 else "",
+                    "platforms": sorted({m["platform"] for m in members if m["platform"]})})
+    return out
+
+
+def _section(rows: list[dict], kind: str) -> dict:
     kept = [r for r in rows if r["label"] == "relevant"]  # analysis uses analyst-confirmed posts only
+    reviewed = [r for r in rows if r["reviewed"]]
+    pending = [r for r in rows if not r["reviewed"]]
+    g_rev, g_pen = _groups(reviewed, kind), _groups(pending, kind)
+    shown_rev, shown_pen = g_rev[:MAX_GROUPS], g_pen[:MAX_GROUPS]
     return {
         "kind": kind, "count": len(rows),
-        "reviewed": sum(1 for r in rows if r["reviewed"]),
-        "pending": sum(1 for r in rows if not r["reviewed"]),
+        "reviewed": len(reviewed), "pending": len(pending),
         "topics": _topics(kept, kind),
         "targets": _target_counts(kept),
-        "posts": [_post_card(r, kind) for r in ordered[:MAX_POSTS]],
-        "more": max(0, len(ordered) - MAX_POSTS),
-        "relevant": sum(1 for r in rows if r["label"] == "relevant"),
+        "groups": shown_rev, "pending_groups": shown_pen,
+        "groups_total": len(g_rev), "pending_groups_total": len(g_pen),
+        "more": sum(g["n"] for g in g_rev[MAX_GROUPS:]) + sum(g["n"] for g in g_pen[MAX_GROUPS:]),
+        "relevant": len(kept),
         "download": f"/download/{kind}s.xlsx",
         "color": COLORS[kind],
     }

@@ -319,6 +319,23 @@ def create_app() -> Flask:
             return {"error": str(exc)}, 503
         return out
 
+    @app.post("/api/relevance/batch")
+    def relevance_label_batch():
+        if not _same_origin_upload():
+            return {"error": "Blocked: submit from this site."}, 403
+        body = request.get_json(silent=True) or {}
+        items = body.get("items")
+        if not isinstance(items, list) or not items or not all(isinstance(i, dict) for i in items):
+            return {"error": "items must be a non-empty list"}, 400
+        try:
+            from triage import feedback
+            n = feedback.set_labels(items, str(body.get("label") or ""))
+        except ValueError as exc:
+            return {"error": str(exc)}, 400
+        except RuntimeError as exc:
+            return {"error": str(exc)}, 503
+        return {"saved": n, "label": body.get("label")}
+
     @app.post("/api/alerts")
     def ingest_alert():
         expected = os.environ.get("ALERT_INGEST_TOKEN")
@@ -356,9 +373,11 @@ def create_app() -> Flask:
             return {"status": "already running"}, 202
 
         def work():
-            from triage.collect import collect
+            from triage.collect import collect, review_backlog
             try:
-                state["last"] = {"at": datetime.now(timezone.utc).isoformat(), "result": collect(st)}
+                result = collect(st)
+                result["reviewed"] = review_backlog(st)
+                state["last"] = {"at": datetime.now(timezone.utc).isoformat(), "result": result}
             except Exception as exc:  # noqa: BLE001
                 state["last"] = {"at": datetime.now(timezone.utc).isoformat(), "error": str(exc)[:300]}
             finally:

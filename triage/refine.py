@@ -54,8 +54,11 @@ _THREAT_FIELDS = (
     "\"theme\": string (2-5 words), \"narrative_summary\": string (max 20 words)"
 )
 _PROTEST_FIELDS = (
-    "\"id\": int, \"is_genuine\": bool (true only for a call to rally, blockade, or take direct "
-    "action, or a report of one), \"protest_topic\": exactly one of \"" + "\"|\"".join(PROTEST_TOPICS) + "\", "
+    "\"id\": int, \"is_genuine\": bool (true only when the post announces or calls for a specific "
+    "rally, march, blockade, or direct action, or reports one from the last week, and gives at least one "
+    "of a date, a place, or an organizer. false for petitions, submissions to inquiries, opinion, news "
+    "commentary, general opposition to AUKUS, reshares with no new detail, and recaps of events older than "
+    "a week), \"protest_topic\": exactly one of \"" + "\"|\"".join(PROTEST_TOPICS) + "\", "
     "\"protest_location\": string (city, region, or site), \"organizers_or_groups\": [who is behind it], "
     "\"targets\": [short names of what the protest is aimed at, one name per target, e.g. AUKUS, "
     "Australian Government, HMAS Stirling], \"event_date\": string (only if stated), "
