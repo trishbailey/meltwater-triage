@@ -19,8 +19,8 @@ from .alerts import AlertError, parse_alert
 log = logging.getLogger(__name__)
 
 # The look-back window is the gap between runs plus two hours of overlap. The Render cron job runs
-# twice a day (every 12 hours), so the default is 14 hours; duplicates are dropped by URL.
-WINDOW_HOURS = int(os.environ.get("COLLECT_WINDOW_HOURS", "14"))
+# twice a day (every 12 hours), so the default is 16 hours (the longest gap between the 06:00 and 20:00 UTC runs is 14); duplicates are dropped by URL.
+WINDOW_HOURS = int(os.environ.get("COLLECT_WINDOW_HOURS", "16"))
 WINDOW = f"{WINDOW_HOURS} hours"
 RESULTS_PER_ACCOUNT = 10
 
@@ -157,3 +157,46 @@ def collect(storage, fetch=_http, env=None, now: datetime | None = None) -> dict
             log.exception("%s collection failed", name)
             summary[name] = f"failed: {type(exc).__name__}: {str(exc)[:200]}"
     return summary
+
+
+def _slot(now: datetime, hours: list[int]) -> str:
+    """Identifier of the most recent scheduled slot at or before `now` (UTC)."""
+    day = now.date()
+    past = [h for h in hours if h <= now.hour]
+    if not past:
+        day, past = day - timedelta(days=1), hours
+    return f"{day}T{max(past):02d}"
+
+
+def start_scheduler(storage, logger=log, env=None, sleep=None):
+    """Run collect() at fixed UTC hours (COLLECT_HOURS, default 10 and 22) in a background thread.
+
+    Does nothing unless a source is configured. The first slot after a start is skipped, so a
+    deploy does not trigger an extra pull. Duplicates are dropped by URL if two instances overlap.
+    """
+    import threading
+    import time
+    env = os.environ if env is None else env
+    if env.get("COLLECT_SCHEDULE", "1") == "0":
+        return None
+    if not (env.get("APIFY_TOKEN") or (env.get("BLUESKY_HANDLE") and env.get("BLUESKY_APP_PASSWORD"))):
+        return None
+    hours = sorted({int(h) for h in env.get("COLLECT_HOURS", "6,20").split(",") if h.strip()})
+    pause = sleep or time.sleep
+
+    def loop():
+        last = _slot(datetime.now(timezone.utc), hours)
+        while True:
+            pause(300)
+            slot = _slot(datetime.now(timezone.utc), hours)
+            if slot == last:
+                continue
+            last = slot
+            try:
+                logger.info("collection %s: %s", slot, collect(storage))
+            except Exception:  # noqa: BLE001
+                logger.exception("collection %s failed", slot)
+
+    t = threading.Thread(target=loop, name="collector", daemon=True)
+    t.start()
+    return t

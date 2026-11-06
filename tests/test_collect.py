@@ -40,3 +40,19 @@ def test_collect_skips_unconfigured_sources(tmp_path):
     st = Storage(f"sqlite:///{tmp_path/'d.db'}")
     out = c.collect(st, fetch=lambda *a, **k: [], env={})
     assert all(str(v).startswith("skipped") for v in out.values())
+
+
+def test_slot_changes_at_scheduled_hours():
+    from datetime import datetime, timezone
+    hours = [10, 22]
+    t = lambda d, h: datetime(2026, 11, d, h, 5, tzinfo=timezone.utc)
+    assert c._slot(t(6, 9), hours) == "2026-11-05T22"
+    assert c._slot(t(6, 10), hours) == "2026-11-06T10"
+    assert c._slot(t(6, 21), hours) == "2026-11-06T10"
+    assert c._slot(t(6, 22), hours) == "2026-11-06T22"
+
+
+def test_scheduler_needs_a_configured_source(tmp_path):
+    st = Storage(f"sqlite:///{tmp_path/'s.db'}")
+    assert c.start_scheduler(st, env={}) is None
+    assert c.start_scheduler(st, env={"APIFY_TOKEN": "t", "COLLECT_SCHEDULE": "0"}) is None
