@@ -173,3 +173,9 @@ def test_threat_targets_must_be_specific_sites():
     r = {"targets": "AUKUS; Australia; HMAS Stirling", "text": "x"}
     assert d._targets(r, True) == ["HMAS Stirling (Rockingham, WA)"]
     assert d._targets({"targets": "AUKUS", "text": "nothing"}, True) == []
+
+
+def test_protest_section_has_no_topic_analysis():
+    from pathlib import Path
+    src = Path("templates/dashboard.html").read_text()
+    assert '{% if s.kind == "threat" %}<div><h3>Topic analysis' in src
