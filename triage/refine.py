@@ -1,11 +1,16 @@
-"""Optional second-pass review of flagged posts with the Anthropic API.
+"""AI review of the posts the pre-sort flagged as threats or protest mobilization.
 
-Enabled only when ANTHROPIC_API_KEY is set (and REFINE_DISABLED is not "1").
-The key is read from the environment and is never logged or printed.
-Model: REFINE_MODEL (default claude-haiku-4-5). Batch size: REFINE_BATCH_SIZE (default 40).
-Output limit: ANTHROPIC_MAX_TOKENS (default 8192). Timeout: ANTHROPIC_TIMEOUT_SECONDS
-(default 120). ANTHROPIC_MAX_RETRIES defaults to 0 so one batch is one request.
-ANTHROPIC_MONTHLY_POST_CAP (see triage.budget) can skip this stage.
+Claude never sees unflagged posts. The code pre-sorts first (triage.filters), so this stage
+handles only the small set that survived. Each post is reviewed with a prompt that asks for
+the fields its category needs (threat, protest, or both) and nothing else, which keeps the
+reply short and the call fast.
+
+Enabled only when ANTHROPIC_API_KEY is set (and REFINE_DISABLED is not "1"). The key is read
+from the environment and is never logged or printed.
+Settings: REFINE_MODEL (default claude-haiku-4-5), REFINE_BATCH_SIZE (default 25),
+ANTHROPIC_CONCURRENCY (default 12, max 16), ANTHROPIC_MAX_TOKENS (default 4096),
+ANTHROPIC_TIMEOUT_SECONDS (default 120). ANTHROPIC_MAX_RETRIES defaults to 0 so one batch is
+one request. ANTHROPIC_MONTHLY_POST_CAP (see triage.budget) can skip this stage.
 """
 from __future__ import annotations
 
@@ -31,24 +36,47 @@ THREAT_TYPES = {
 VALID_CATEGORIES = {"threat", "protest", "both", "none"}
 VALID_SEVERITY = {"low", "medium", "high", "critical"}
 
-SYSTEM_PROMPT = (
-    "You review social media and news posts that a keyword filter flagged as possible threats "
-    "(violence, sabotage, intimidation against a defense program, facilities, or people) or "
-    "protest mobilization (calls to rally, blockade, or take direct action). For each post, decide "
-    "whether the flag is genuine. Return JSON: {\"results\": [{\"id\": int, \"is_genuine\": bool, "
-    "\"refined_category\": \"threat\"|\"protest\"|\"both\"|\"none\", \"narrative_summary\": "
-    "string (max 30 words), \"theme\": string (2-5 words), \"severity\": "
+_CONTEXT = (
+    "You review social media and news posts about the AUKUS defense program in Australia. A "
+    "keyword pre-sort flagged each post below as a possible {what}. Decide whether the flag is "
+    "genuine. Return JSON {{\"results\": [{{...}}]}} with one result per input id. Use American "
+    "spelling. Leave out any field that has no value, so replies stay short."
+)
+_THREAT_FIELDS = (
+    "\"id\": int, \"is_genuine\": bool (true only for violence, sabotage, intimidation, or "
+    "harassment aimed at the program, its facilities, or people), \"severity\": "
     "\"low\"|\"medium\"|\"high\"|\"critical\", \"threat_type\": one of \"violence\"|"
     "\"death threat\"|\"bombing or arson\"|\"sabotage\"|\"doxxing\"|\"harassment\"|"
-    "\"call to protest\"|\"call to disruption\"|\"other\"|\"none\", \"targets\": [strings: "
-    "people, groups, places, or institutions the post targets or mentions as targets], "
-    "\"named_individuals\": [strings: named politicians and other named people], "
-    "\"protest_location\": string (city, region, or site; empty if none), \"protest_topic\": "
-    "string (2-6 words; empty if not a protest), \"organizers_or_groups\": [strings: who is "
-    "behind the protest], \"event_date\": string (only if stated, else empty), "
-    "\"scale_or_turnout\": string (only if stated, else empty)}]}. "
-    "One result per input id. Use American spelling."
+    "\"call to disruption\"|\"other\", \"targets\": [people, groups, places, or institutions the "
+    "post threatens], \"named_individuals\": [named politicians and other named people], "
+    "\"theme\": string (2-5 words), \"narrative_summary\": string (max 20 words)"
 )
+_PROTEST_FIELDS = (
+    "\"id\": int, \"is_genuine\": bool (true only for a call to rally, blockade, or take direct "
+    "action, or a report of one), \"protest_topic\": string (2-6 words), \"protest_location\": "
+    "string (city, region, or site), \"organizers_or_groups\": [who is behind it], \"targets\": "
+    "[what the protest is aimed at], \"event_date\": string (only if stated), "
+    "\"scale_or_turnout\": string (only if stated), \"narrative_summary\": string (max 20 words)"
+)
+_BOTH_FIELDS = (
+    "\"id\": int, \"is_genuine\": bool, \"refined_category\": \"threat\"|\"protest\"|\"both\"|"
+    "\"none\", plus every threat field (severity, threat_type, targets, named_individuals, "
+    "theme) and every protest field (protest_topic, protest_location, organizers_or_groups, "
+    "event_date, scale_or_turnout) that applies, and \"narrative_summary\": string (max 20 words)"
+)
+PROMPT_KINDS = {
+    "threat": ("threat (violence, sabotage, or intimidation)", _THREAT_FIELDS),
+    "protest": ("protest or mobilization (a call to rally, blockade, or direct action)", _PROTEST_FIELDS),
+    "both": ("threat and protest mobilization", _BOTH_FIELDS),
+}
+
+
+def system_prompt(kind: str) -> str:
+    what, fields = PROMPT_KINDS[kind]
+    return _CONTEXT.format(what=what) + " Each result has: {" + fields + "}."
+
+
+SYSTEM_PROMPT = system_prompt("both")
 
 # A completion function takes (system, user) and returns the JSON string reply.
 CompleteFn = Callable[[str, str], str]
@@ -90,7 +118,7 @@ def anthropic_complete(max_tokens: int | None = None) -> CompleteFn:
         max_retries=_env_int("ANTHROPIC_MAX_RETRIES", 0, 0, 5),
     )
     model = os.environ.get("REFINE_MODEL", DEFAULT_MODEL)
-    limit = max_tokens if max_tokens is not None else _env_int("ANTHROPIC_MAX_TOKENS", 8192, 256, 64000)
+    limit = max_tokens if max_tokens is not None else _env_int("ANTHROPIC_MAX_TOKENS", 4096, 256, 64000)
 
     def complete(system: str, user: str) -> str:
         resp = client.messages.create(
@@ -109,8 +137,8 @@ def anthropic_complete(max_tokens: int | None = None) -> CompleteFn:
 
 
 def concurrency() -> int:
-    """Parallel Claude requests per stage (ANTHROPIC_CONCURRENCY, default 8, max 12)."""
-    return _env_int("ANTHROPIC_CONCURRENCY", 8, 1, 12)
+    """Parallel Claude requests (ANTHROPIC_CONCURRENCY, default 12, max 16)."""
+    return _env_int("ANTHROPIC_CONCURRENCY", 12, 1, 16)
 
 
 def run_concurrently(fn, jobs: list) -> list:
@@ -122,11 +150,12 @@ def run_concurrently(fn, jobs: list) -> list:
         return list(pool.map(fn, jobs))
 
 
-def _post_payload(i: int, row: pd.Series, text_cols: list) -> dict:
-    text = " ".join(str(row[c]) for c in text_cols if pd.notna(row[c]))
-    return {"id": i, "text": text[:1200],
-            "author": " ".join(str(row[c]) for c in row.index
-                               if str(c).lower() in ("author name", "author handle") and pd.notna(row[c])), "keyword_category": row.get("category", ""),
+def _post_payload(i: int, row: dict, text_cols: list) -> dict:
+    text = " ".join(str(row[c]) for c in text_cols if c in row and pd.notna(row[c]))
+    return {"id": i, "text": text[:1000],
+            "author": " ".join(str(row[c]) for c in row
+                               if str(c).lower() in ("author name", "author handle") and pd.notna(row[c])),
+            "keyword_category": row.get("category", ""),
             "matched_keywords": row.get("matched_keywords", "")}
 
 
@@ -144,21 +173,27 @@ def _as_bool(value):
     return None
 
 
-def _clean(item: dict) -> dict:
+def _clean(item: dict, kind: str | None = None) -> dict:
     cat = str(item.get("refined_category", "")).lower()
+    genuine = _as_bool(item.get("is_genuine")) if "is_genuine" in item else None
+    if cat not in VALID_CATEGORIES:
+        # The prompt for a single category does not ask for it; derive it from the verdict.
+        cat = ("none" if genuine is False else kind) if kind in ("threat", "protest") else ""
     sev = str(item.get("severity", "")).lower()
     tt = str(item.get("threat_type", "")).strip().lower()
+    topic = _text(item.get("protest_topic"), 100)
+    theme = str(item.get("theme", ""))[:100] or topic
     return {
-        "is_genuine": _as_bool(item.get("is_genuine")) if "is_genuine" in item else None,
-        "refined_category": cat if cat in VALID_CATEGORIES else "",
+        "is_genuine": genuine,
+        "refined_category": cat,
         "narrative_summary": str(item.get("narrative_summary", ""))[:500],
-        "theme": str(item.get("theme", ""))[:100],
+        "theme": theme,
         "severity": sev if sev in VALID_SEVERITY else "",
         "threat_type": tt if tt in THREAT_TYPES else ("other" if tt else ""),
         "targets": _join_list(item.get("targets")),
         "named_individuals": _join_list(item.get("named_individuals")),
         "protest_location": _text(item.get("protest_location"), 200),
-        "protest_topic": _text(item.get("protest_topic"), 100),
+        "protest_topic": topic,
         "organizers_or_groups": _join_list(item.get("organizers_or_groups")),
         "event_date": _text(item.get("event_date"), 100),
         "scale_or_turnout": _text(item.get("scale_or_turnout"), 100),
@@ -204,42 +239,47 @@ def _absorb(results: dict, reply_text: str, clean) -> None:
             continue
 
 
-
-def _few_shot_block() -> str:
-    """Compact labeled examples for the review prompt (keeps token use small)."""
+def few_shot_block(storage=None) -> str:
+    """Compact analyst-labeled examples for the prompt. Built once per run, not per batch."""
     try:
         from . import feedback as fb
         from .storage import Storage, persistence_enabled
         if not persistence_enabled():
             return ""
-        st = Storage()
-        posts = st.load_posts()
-        by_id = {}
-        if posts is not None and not posts.empty:
-            for r in posts.to_dict(orient="records"):
-                by_id[str(r.get("document_id"))] = r
+        labeled = {lab: [r for r in fb.recent_examples(lab, limit=12) if r["item_type"] == "post"]
+                   for lab in ("relevant", "not_relevant")}
+        ids = [str(r["item_id"]) for rows in labeled.values() for r in rows]
+        if not ids:
+            return ""
+        by_id = (storage or Storage()).posts_for_ids(ids)
         lines = []
         for lab, title in (("relevant", "RELEVANT"), ("not_relevant", "NOT RELEVANT")):
-            rows = fb.recent_examples(lab, limit=12)
-            if not rows:
-                continue
-            lines.append(title + ":")
-            for row in rows:
-                if row["item_type"] != "post":
-                    continue
-                rec = by_id.get(str(row["item_id"])) or {}
-                data = rec.get("data") if isinstance(rec.get("data"), dict) else {}
-                text = str(data.get("Hit Sentence") or data.get("narrative_summary") or rec.get("category") or "")[:180]
+            block = []
+            for row in labeled[lab]:
+                data = by_id.get(str(row["item_id"])) or {}
+                text = str(data.get("Hit Sentence") or data.get("narrative_summary") or "")[:180]
                 if text:
-                    lines.append("- " + text.replace("\n", " "))
+                    block.append("- " + text.replace("\n", " "))
+            if block:
+                lines += [title + ":"] + block
         return "\n".join(lines)[:2500]
     except Exception:
         return ""
 
 
+def _kind_of(category) -> str:
+    cat = str(category or "")
+    return cat if cat in ("threat", "protest", "both") else "both"
+
+
 def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None = None,
-           batch_size: int | None = None, budget=None, progress=None) -> pd.DataFrame:
-    """Add REFINE_COLUMNS to `flagged`. Returns input unchanged if disabled."""
+           batch_size: int | None = None, budget=None, progress=None,
+           examples: str | None = None) -> pd.DataFrame:
+    """Add REFINE_COLUMNS to `flagged`. Returns input unchanged if disabled.
+
+    Posts are grouped by category so each batch gets the prompt, and the reply size, for
+    that category only.
+    """
     if complete is None:
         if not is_enabled():
             return flagged
@@ -250,42 +290,47 @@ def refine(flagged: pd.DataFrame, text_cols: list, complete: CompleteFn | None =
     if flagged.empty:
         return flagged.assign(**{c: pd.Series(dtype=object) for c in REFINE_COLUMNS})
     batch_size = _positive_int(
-        batch_size if batch_size is not None else os.environ.get("REFINE_BATCH_SIZE", "40"), 40)
+        batch_size if batch_size is not None else os.environ.get("REFINE_BATCH_SIZE", "25"), 25)
     out = flagged.reset_index(drop=True).copy()
+    records = out.to_dict(orient="records")
     results: dict[int, dict] = {}
-    ids = list(range(len(out)))
+    tip = few_shot_block() if examples is None else examples
+    by_kind: dict[str, list[int]] = {}
+    for i, rec in enumerate(records):
+        by_kind.setdefault(_kind_of(rec.get("category")), []).append(i)
     jobs = []
-    for start in range(0, len(ids), batch_size):
-        chunk_ids = ids[start:start + batch_size]
-        allowed = budget.take(len(chunk_ids))  # reserved serially so the caps hold
-        if allowed <= 0:
-            break
-        chunk_ids = chunk_ids[:allowed]
-        chunk = out.iloc[chunk_ids]
-        payload = [_post_payload(int(i), r, text_cols) for i, r in chunk.iterrows()]
-        jobs.append((start, len(chunk_ids), json.dumps({"posts": payload})))
+    for kind, ids in by_kind.items():
+        system = system_prompt(kind) + (("\n\nLabeled examples from the analyst:\n" + tip) if tip else "")
+        for start in range(0, len(ids), batch_size):
+            chunk_ids = ids[start:start + batch_size]
+            allowed = budget.take(len(chunk_ids))  # reserved serially so the caps hold
+            if allowed <= 0:
+                break
+            chunk_ids = chunk_ids[:allowed]
+            payload = [_post_payload(i, records[i], text_cols) for i in chunk_ids]
+            jobs.append((kind, start, len(chunk_ids), system, json.dumps({"posts": payload})))
 
     def _run(job):
-        start, n, body = job
+        kind, start, n, system, body = job
         parsed: dict[int, dict] = {}
-        records = None
+        done = None
         try:
-            tip = _few_shot_block()
-            system = SYSTEM_PROMPT + (("\n\nLabeled examples from the analyst:\n" + tip) if tip else "")
             reply = complete(system, body)
-            _absorb(parsed, reply, _clean)
-            records = []
+            _absorb(parsed, reply, lambda item: _clean(item, kind))
+            done = []
             for i, cleaned in parsed.items():
-                rec = out.loc[i].to_dict()
+                if not 0 <= i < len(records):
+                    continue
+                rec = dict(records[i])
                 rec.update({k: v for k, v in cleaned.items() if v is not None})
-                records.append(rec)
+                done.append(rec)
         except Exception as exc:  # keep keyword results if the review call fails
-            log.warning("Refinement batch at row %d failed: %s", start, type(exc).__name__)
-            records = None
+            log.warning("Review batch (%s, row %d) failed: %s", kind, start, type(exc).__name__)
+            done = None
             parsed = {}
         # Durably record a completed batch before telling the job it made progress.
-        if records and progress:
-            progress(n, records)
+        if done and progress:
+            progress(n, done)
         elif progress:
             progress(n)
         return parsed

@@ -375,6 +375,7 @@ def _iter_xlsx_chunks(filename: str, data: bytes, budget: int):
                 frame = pd.DataFrame(batch, columns=columns)
                 frame["uploaded_file"] = label
                 frame["worksheet"] = sheet
+                frame["export_source"] = "Meltwater"
                 produced += len(frame)
                 batch.clear()
                 return frame
@@ -415,6 +416,7 @@ def _iter_csv_chunks(filename: str, data: bytes, budget: int):
                 frame = frame.copy()
                 frame["uploaded_file"] = label
                 frame["worksheet"] = ""
+                frame["export_source"] = "Meltwater"
                 produced += len(frame)
                 yield frame
             return
@@ -422,6 +424,20 @@ def _iter_csv_chunks(filename: str, data: bytes, budget: int):
             produced = 0
             continue
     raise ValueError("Could not parse CSV file")
+
+
+def _iter_seerist_chunks(filename: str, data: bytes, budget: int):
+    """A Seerist PDF export, parsed into Meltwater-shaped rows."""
+    from . import seerist
+    try:
+        items = seerist.parse_pdf(data)
+    except seerist.SeeristError as exc:
+        raise ValueError(str(exc)) from exc
+    if len(items) > budget:
+        raise _row_limit_error()
+    if not items:
+        raise ValueError("No Seerist items were found in " + _file_label(filename) + ".")
+    yield seerist.items_to_frame(items, _file_label(filename))
 
 
 def iter_upload_chunks(files: list[tuple[str, bytes]]):
@@ -436,6 +452,8 @@ def iter_upload_chunks(files: list[tuple[str, bytes]]):
             iterator = _iter_xlsx_chunks(name, data, budget)
         elif lower.endswith(".csv"):
             iterator = _iter_csv_chunks(name, data, budget)
+        elif lower.endswith(".pdf"):
+            iterator = _iter_seerist_chunks(name, data, budget)
         else:
             raise ValueError(f"Unsupported file type: {_file_label(name)}")
         for frame in iterator:

@@ -3,9 +3,8 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from triage.aggregate import heat_by_topic, recurring_threat_posters
+from triage.aggregate import recurring_threat_posters
 from triage.filters import Patterns, screen_text
-from triage.heat import analyze_heat
 from triage.pipeline import process, to_workbook
 from triage.refine import refine
 from triage.storage import Storage, rows_to_store
@@ -72,57 +71,11 @@ def test_recurring_threat_posters():
     assert str(out.loc[0, "last_seen"].date()) == "2026-10-20"
 
 
-# --- heat ---------------------------------------------------------------
-def _heat_fake(calls):
-    def fake(system, user):
-        posts = json.loads(user)["posts"]
-        calls.append(len(posts))
-        return json.dumps({"results": [{"id": p["id"], "heat_score": p["id"] % 11,
-                                        "topic": "Program Cost and Value" if p["id"] % 2 else "sovereignty and US alliance",
-                                        "heated_phrases": ["x"]} for p in posts]})
-    return fake
-
-
-def test_heat_cap_and_batches(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    df = pd.DataFrame({"Hit Sentence": [f"post {i}" for i in range(50)], "Engagement": range(50)})
-    assert "heat_score" not in analyze_heat(df, ["Hit Sentence"]).columns  # skipped w/o key
-    calls = []
-    out = analyze_heat(df, ["Hit Sentence"], complete=_heat_fake(calls), max_posts=12, batch_size=5)
-    assert sorted(calls) == [2, 5, 5] and sum(calls) == 12
-    assert out["heat_sampled"].sum() == 12 and out["heat_score"].notna().sum() == 12
-    topics = heat_by_topic(out)
-    assert set(topics["topic"]) <= {"program cost and value", "sovereignty and US alliance"}
-    assert topics["avg_heat"].is_monotonic_decreasing
-    assert {"total_heat", "total_engagement"} <= set(topics.columns)
-
-
-def test_heat_cap_prefers_engagement():
-    df = pd.DataFrame({"Hit Sentence": list("abcde"), "Engagement": [5, None, 50, "x", 20]})
-    seen = []
-
-    def fake(system, user):
-        posts = json.loads(user)["posts"]
-        seen.extend(p["text"] for p in posts)
-        return json.dumps({"results": [{"id": p["id"], "heat_score": 1, "topic": "t"} for p in posts]})
-
-    out = analyze_heat(df, ["Hit Sentence"], complete=fake, max_posts=2)
-    assert sorted(seen) == ["c", "e"]
-    assert out["heat_sampled"].tolist() == [False, False, True, False, True]
-
-
-def test_heat_score_clamped():
-    df = pd.DataFrame({"Hit Sentence": ["a"]})
-    out = analyze_heat(df, ["Hit Sentence"], complete=lambda s, u: json.dumps(
-        {"results": [{"id": 0, "heat_score": 42, "topic": "T", "heated_phrases": "boo"}]}))
-    assert out.loc[0, "heat_score"] == 10 and out.loc[0, "heated_phrases"] == "boo"
-
-
 # --- storage ------------------------------------------------------------
 def _flagged(ids, cat="threat"):
     return pd.DataFrame({"Document ID": ids, "Date": ["2026-10-01"] * len(ids),
                          "Author Handle": ["@a"] * len(ids), "Engagement": [5] * len(ids),
-                         "category": [cat] * len(ids), "link": ["https://e.x"] * len(ids)})
+                         "category": [cat] * len(ids), "link": [f"https://e.x/{i}" for i in ids]})
 
 
 def test_storage_dedupe_and_monthly_by_post_date(tmp_path):
@@ -147,29 +100,27 @@ def test_storage_dedupe_and_monthly_by_post_date(tmp_path):
     assert set(st.load_posts("2026-11")["Document ID"]) == {"d3"}
 
 
-def test_storage_keeps_heat_posts_and_prior_signal(tmp_path):
+def test_storage_keeps_prior_review_on_reupload(tmp_path):
     st = Storage(f"sqlite:///{tmp_path/'h.db'}")
-    all_posts = pd.DataFrame({"Document ID": ["f", "h1", "h2", "x"],
-                              "Date": ["2026-10-01", "2026-10-03", "2026-11-01", "2026-11-02"],
-                              "Engagement": [1, 2, 3, 4],
-                              "category": ["threat", "", "", ""],
-                              "heat_score": [9, 4, 6, None], "heat_topic": ["costs", "costs", "jobs", None],
-                              "heat_sampled": [True, True, True, False]})
-    flagged = all_posts[all_posts["category"] != ""].assign(severity="high")
-    st.save_run(rows_to_store(all_posts, flagged), ["w1.xlsx"], 4)
-    stored = st.load_posts()
-    assert set(stored["Document ID"]) == {"f", "h1", "h2"}  # unscored, unflagged "x" not kept
-    assert stored.set_index("Document ID")["is_flagged"].to_dict() == {"f": True, "h1": False, "h2": False}
-    heat = st.monthly_heat()
-    oct_costs = heat[(heat.month == "2026-10") & (heat.topic == "costs")].iloc[0]
-    assert oct_costs["posts"] == 2 and oct_costs["avg_heat"] == 6.5
-    # Re-upload "f" without heat or flag: earlier flag, severity and score survive.
+    posts = pd.DataFrame({"Document ID": ["f"], "Date": ["2026-10-01"], "Engagement": [1],
+                          "category": ["threat"], "severity": ["high"]})
+    st.save_run(rows_to_store(posts, posts), ["w1.xlsx"], 1)
     again = pd.DataFrame({"Document ID": ["f"], "Date": ["2026-10-01"], "category": [""],
-                          "heat_score": [None], "is_flagged": [False]})
+                          "is_flagged": [False]})
     st.save_run(again, ["w2.xlsx"], 1)
     f = st.load_posts(flagged_only=True)
     assert list(f["Document ID"]) == ["f"] and f.iloc[0]["severity"] == "high"
-    assert f.iloc[0]["heat_score"] == 9
+
+
+def test_storage_merges_seerist_twin_but_not_same_source(tmp_path):
+    st = Storage(f"sqlite:///{tmp_path/'t.db'}")
+    def rows(ids, src):
+        return pd.DataFrame({"Document ID": ids, "Date": ["2026-10-01"] * len(ids), "category": ["threat"] * len(ids),
+                             "link": ["https://e.x/a"] * len(ids), "export_source": [src] * len(ids)})
+    st.save_run(rows(["m1", "m2"], "Meltwater"), ["a.xlsx"], 2)
+    assert len(st.load_posts()) == 2  # same URL, same source: distinct posts
+    st.save_run(rows(["seerist:1"], "Seerist"), ["b.pdf"], 1)
+    assert len(st.load_posts()) == 2  # Seerist twin merged into an existing post
 
 
 def test_pipeline_end_to_end(tmp_path, monkeypatch):
@@ -182,13 +133,12 @@ def test_pipeline_end_to_end(tmp_path, monkeypatch):
     st = Storage(f"sqlite:///{tmp_path/'p.db'}")
     calls = []
     res = process([("w.xlsx", buf.getvalue())], refine_fn=lambda s, u: '{"results": []}',
-                  heat_fn=_heat_fake(calls), storage=st)
+                  storage=st)
     assert len(res.flagged) == 2 and res.run_id == 1
     assert res.posters.loc[0, "author_handle"] == "@a" and res.posters.loc[0, "total_engagement"] == 1002
-    assert res.all_posts["heat_sampled"].all()  # heat covers all posts, not just hits
     sheets = pd.ExcelFile(io.BytesIO(to_workbook(res))).sheet_names
-    assert sheets == ["Flagged", "Recurring threat posters", "Heat by topic", "Heat (all posts)"]
-    assert len(st.load_posts()) == 3  # 2 flagged + 1 heat-scored
+    assert sheets == ["Warnings", "Threat posts", "Protest posts", "Recurring threat posters"]  # warning: nothing reviewed
+    assert len(st.load_posts()) == 2  # only flagged posts are kept
     assert len(st.load_posts(flagged_only=True)) == 2
     assert "__triage_src_row" not in st.load_posts().columns
 
@@ -208,7 +158,7 @@ def test_workbook_neutralizes_formulas_and_bad_chars(monkeypatch):
     sheet = zipfile.ZipFile(io.BytesIO(raw)).read("xl/worksheets/sheet1.xml")
     assert b"<f>" not in sheet and b"<f " not in sheet
     wb = load_workbook(io.BytesIO(raw))
-    ws = wb["Flagged"]
+    ws = wb["Threat posts"]
     types = {c.data_type for row in ws.iter_rows() for c in row}
     values = [str(c.value) for row in ws.iter_rows() for c in row if c.value is not None]
     assert "f" not in types
@@ -250,11 +200,8 @@ def _cap_fake(calls):
 
     def fake(system, user):
         posts = json.loads(user)["posts"]
-        kind = "heat" if "heat_score" in system else "refine"
+        kind = "refine"
         calls.append((kind, len(posts), [p.get("text") for p in posts]))
-        if kind == "heat":
-            return json.dumps({"results": [
-                {"id": p["id"], "heat_score": 1, "topic": "t"} for p in posts]})
         return json.dumps({"results": [
             {"id": p["id"], "is_genuine": True, "refined_category": "threat", "severity": "low"}
             for p in posts]})
@@ -264,23 +211,22 @@ def _cap_fake(calls):
 
 def test_monthly_cap_prefers_review_then_stops(tmp_path, monkeypatch):
     import io
-    monkeypatch.setenv("ANTHROPIC_MONTHLY_POST_CAP", "3")
+    monkeypatch.setenv("ANTHROPIC_MONTHLY_POST_CAP", "1")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("PERSIST_RUNS", raising=False)
     st = Storage(f"sqlite:///{tmp_path/'cap.db'}")
     calls = []
     data = _cap_file()
-    res = process([("f.xlsx", data)], refine_fn=_cap_fake(calls), heat_fn=_cap_fake(calls), storage=st)
-    assert calls[0][0] == "refine" and calls[0][1] == 2
-    assert calls[1] == ("heat", 1, ["bomb HMAS Stirling"])
-    assert st.posts_sent_this_month() == 3
+    res = process([("f.xlsx", data)], refine_fn=_cap_fake(calls), storage=st)
+    assert calls[0][0] == "refine" and calls[0][1] == 1
+    assert st.posts_sent_this_month() == 1
     assert len(res.flagged) == 2
     calls.clear()
-    res2 = process([("f.xlsx", data)], refine_fn=_cap_fake(calls), heat_fn=_cap_fake(calls), storage=st)
+    res2 = process([("f.xlsx", data)], refine_fn=_cap_fake(calls), storage=st)
     assert calls == []
     assert len(res2.flagged) == 2
-    assert st.posts_sent_this_month() == 3
+    assert st.posts_sent_this_month() == 1
     warn = pd.read_excel(io.BytesIO(to_workbook(res2)), sheet_name="Warnings")
     text = " ".join(warn["warning"].astype(str))
     assert "monthly limit" in text and "Keyword screening" in text
@@ -293,7 +239,7 @@ def test_monthly_cap_requires_a_database(monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("PERSIST_RUNS", raising=False)
     calls = []
-    res = process([("f.xlsx", _cap_file())], refine_fn=_cap_fake(calls), heat_fn=_cap_fake(calls))
+    res = process([("f.xlsx", _cap_file())], refine_fn=_cap_fake(calls))
     assert calls == []
     assert len(res.flagged) == 2
     warn = pd.read_excel(io.BytesIO(to_workbook(res)), sheet_name="Warnings")
@@ -305,7 +251,7 @@ def test_invalid_monthly_cap_skips_claude(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     st = Storage(f"sqlite:///{tmp_path/'bad.db'}")
     calls = []
-    res = process([("f.xlsx", _cap_file())], refine_fn=_cap_fake(calls), heat_fn=_cap_fake(calls), storage=st)
+    res = process([("f.xlsx", _cap_file())], refine_fn=_cap_fake(calls), storage=st)
     assert calls == [] and res.notes
     assert "ANTHROPIC_MONTHLY_POST_CAP" in res.notes[0]
     assert st.posts_sent_this_month() == 0
@@ -408,17 +354,3 @@ def test_anthropic_call_uses_supported_args(monkeypatch):
     monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
     assert anthropic_complete()("sys", "{}") == '{"results": []}'
     assert set(seen) <= allowed
-
-
-def test_heat_topics_fixed_list_with_subtopic():
-    from triage import keywords as kw
-    from triage.heat import heat_prompt
-    for t in kw.HEAT_TOPICS:
-        assert t in heat_prompt()
-    df = pd.DataFrame({"Hit Sentence": ["a", "b", "c"]})
-    out = analyze_heat(df, ["Hit Sentence"], complete=lambda s, u: json.dumps({"results": [
-        {"id": 0, "heat_score": 5, "topic": "JOBS AND INDUSTRY", "subtopic": "Shipyard Hiring"},
-        {"id": 1, "heat_score": 2, "topic": "made-up topic", "subtopic": "x"},
-        {"id": 2, "heat_score": 1}]}))
-    assert out["heat_topic"].tolist() == ["jobs and industry", "other", ""]
-    assert out.loc[0, "heat_subtopic"] == "shipyard hiring"

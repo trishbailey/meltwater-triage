@@ -1,7 +1,7 @@
-"""Persistence for upload runs and posts (for month-over-month dashboards).
+"""Persistence for upload runs and posts.
 
-Stores every post that was keyword-flagged OR heat-scored, deduped by Meltwater
-Document ID. Reporting periods come from the post date (Meltwater "Date":
+Stores every post the pre-sort flagged as a threat or protest, deduped by Document ID
+and by normalized URL. Reporting periods come from the post date (Meltwater "Date":
 post_week / post_month); the upload week/month are kept as secondary fields.
 
 DATABASE_URL selects the database. Render "postgres://" URLs are rewritten to
@@ -22,7 +22,7 @@ from datetime import date, datetime, timezone
 
 import pandas as pd
 from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, MetaData,
-                        String, Table, Text, case, create_engine, event, func, select)
+                        String, Table, Text, bindparam, case, create_engine, event, func, select)
 from sqlalchemy.exc import IntegrityError
 
 metadata = MetaData()
@@ -58,6 +58,7 @@ posts = Table(
     Column("author_handle", Text),
     Column("source_name", Text),
     Column("link", Text),
+    Column("url_key", Text, index=True),  # normalized URL; ties a Seerist item to its Meltwater twin
     Column("engagement", Float),
     Column("heat_score", Float),
     Column("heat_topic", Text),
@@ -199,84 +200,191 @@ class Storage:
         from .schema import ensure_schema
         ensure_schema(self.engine, metadata)
 
+    @staticmethod
+    def _chunks(items: list, size: int = 400):
+        for i in range(0, len(items), size):
+            yield items[i:i + size]
+
+    def _fetch(self, conn, column, values: list) -> dict:
+        """Existing post rows keyed by `column` (document_id or url_key), in a few IN queries."""
+        out: dict = {}
+        for part in self._chunks(sorted({v for v in values if v})):
+            for row in conn.execute(select(posts).where(column.in_(part))).mappings().all():
+                out.setdefault(row[column.key], dict(row))
+        return out
+
+    def _fetch_all(self, conn, column, values: list) -> dict:
+        """Every existing row for each value of `column`: {value: [row, ...]}."""
+        out: dict = {}
+        for part in self._chunks(sorted({v for v in values if v})):
+            for row in conn.execute(select(posts).where(column.in_(part))).mappings().all():
+                out.setdefault(row[column.key], []).append(dict(row))
+        return out
+
     def save_run(self, rows: pd.DataFrame, filenames: list[str], rows_screened: int,
                  now: datetime | None = None) -> int:
-        """Save one upload run; `rows` should come from rows_to_store()."""
+        """Save one upload run; `rows` should come from rows_to_store().
+
+        Rows are written in bulk: one lookup per few hundred posts and one executemany for
+        inserts and for updates. A post that already exists under the same Document ID, or
+        under the same normalized URL (a Seerist item and its Meltwater twin), is merged
+        into the stored row instead of added again.
+        """
+        from .alerts import normalize_url
+        from .origin import origin_label, publisher_label
         now = now or datetime.now(timezone.utc)
         week, month = iso_week(now.date()), now.strftime("%Y-%m")
         flags = rows["is_flagged"] if "is_flagged" in rows else pd.Series(True, index=rows.index)
         heat_n = int(rows["heat_score"].notna().sum()) if "heat_score" in rows else 0
+
+        prepared: dict[str, dict] = {}
+        url_owner: dict[str, str] = {}
+        for rec in rows.to_dict(orient="records"):
+            data = {str(k): _jsonable(v) for k, v in rec.items()}
+            doc = _doc_id(data)
+            link = data.get("link") or _lc(data, "url")
+            ukey = normalize_url(str(link)) if link else ""
+            source = str(data.get("export_source") or "Meltwater")
+            owner = url_owner.get(ukey) if ukey else None
+            if owner and owner[0] != doc and owner[1] != source:
+                doc = owner[0]  # the same post from the other export, seen in this upload
+            elif ukey and not owner:
+                url_owner[ukey] = (doc, source)
+            origin = origin_label(data)
+            publisher = publisher_label(data)
+            data["origin_source"] = origin
+            if publisher:
+                data["publisher"] = publisher
+            if doc in prepared:
+                first = prepared[doc]
+                first["data"].update({k: v for k, v in data.items() if v not in (None, "")})
+                continue
+            dt = pd.to_datetime(_lc(data, "date"), errors="coerce")
+            has_dt = not pd.isna(dt)
+            prepared[doc] = {"data": data, "ukey": ukey, "origin": origin, "values": dict(
+                post_date=dt.to_pydatetime() if has_dt else None,
+                post_week=iso_week(dt.date()) if has_dt else None,
+                post_month=dt.strftime("%Y-%m") if has_dt else None,
+                is_flagged=bool(data.get("is_flagged")),
+                category=data.get("category") or None,
+                refined_category=data.get("refined_category") or None,
+                severity=data.get("severity") or None, threat_type=data.get("threat_type") or None,
+                author_name=_lc(data, "author name"), author_handle=_lc(data, "author handle"),
+                source_name=origin, link=data.get("link"), url_key=ukey or None,
+                engagement=_num(_lc(data, "engagement")), heat_score=_num(data.get("heat_score")),
+                heat_topic=data.get("heat_topic") or None)}
+
         with self.engine.begin() as conn:
             run_id = conn.execute(runs.insert().values(
                 created_at=now, upload_week=week, upload_month=month,
                 filenames=json.dumps(filenames), rows_screened=rows_screened,
                 rows_flagged=int(flags.sum()), rows_heat_scored=heat_n)).inserted_primary_key[0]
-            for rec in rows.to_dict(orient="records"):
-                data = {str(k): _jsonable(v) for k, v in rec.items()}
-                doc = _doc_id(data)
-                dt = pd.to_datetime(_lc(data, "date"), errors="coerce")
-                has_dt = not pd.isna(dt)
-                from .origin import origin_label, publisher_label
-                origin = origin_label(data)
-                publisher = publisher_label(data)
-                data["origin_source"] = origin
-                if publisher:
-                    data["publisher"] = publisher
-                values = dict(
-                    last_run_id=run_id,
-                    post_date=dt.to_pydatetime() if has_dt else None,
-                    post_week=iso_week(dt.date()) if has_dt else None,
-                    post_month=dt.strftime("%Y-%m") if has_dt else None,
-                    is_flagged=bool(data.get("is_flagged")),
-                    category=data.get("category") or None,
-                    refined_category=data.get("refined_category") or None,
-                    severity=data.get("severity") or None, threat_type=data.get("threat_type") or None,
-                    author_name=_lc(data, "author name"), author_handle=_lc(data, "author handle"),
-                    source_name=origin, link=data.get("link"),
-                    engagement=_num(_lc(data, "engagement")), heat_score=_num(data.get("heat_score")),
-                    heat_topic=data.get("heat_topic") or None, data=data)
-                old = conn.execute(select(posts).where(posts.c.document_id == doc)).mappings().first()
-                if old:
-                    # Never lose earlier signal: keep flags and prior scores when new ones are blank.
-                    values["is_flagged"] = values["is_flagged"] or bool(old["is_flagged"])
-                    for k in ("category", "refined_category", "severity", "threat_type",
-                              "heat_score", "heat_topic"):
-                        if values[k] is None:
-                            values[k] = old[k]
-                    merged = dict(old["data"] or {})
-                    merged.update({k: v for k, v in data.items() if v not in (None, "")})
-                    prev_source = (old["source_name"] or "").strip()
-                    if origin == "Unknown source" and prev_source and "meltwater" not in prev_source.lower():
-                        values["source_name"] = prev_source
-                        merged["origin_source"] = prev_source
-                    values["data"] = merged
-                    conn.execute(posts.update().where(posts.c.document_id == doc).values(**values))
-                else:
-                    conn.execute(posts.insert().values(document_id=doc, first_run_id=run_id,
-                                                       upload_week=week, upload_month=month, **values))
+            existing = self._fetch(conn, posts.c.document_id, list(prepared))
+            by_url = self._fetch_all(conn, posts.c.url_key, [
+                p["ukey"] for d, p in prepared.items() if d not in existing and p["ukey"]])
+            inserts, updates = [], []
+            for doc, item in prepared.items():
+                data, values, origin = item["data"], item["values"], item["origin"]
+                old = existing.get(doc)
+                if old is None:
+                    # Same URL stored from the other export (Seerist vs Meltwater): same post.
+                    mine = str(data.get("export_source") or "Meltwater")
+                    old = next((r for r in by_url.get(item["ukey"], [])
+                                if str((r["data"] or {}).get("export_source") or "Meltwater") != mine), None)
+                if old is None:
+                    inserts.append({"document_id": doc, "first_run_id": run_id, "upload_week": week,
+                                    "upload_month": month, "last_run_id": run_id, "data": data, **values})
+                    continue
+                # Never lose earlier signal: keep flags and prior scores when new ones are blank.
+                values["is_flagged"] = values["is_flagged"] or bool(old["is_flagged"])
+                for k in ("category", "refined_category", "severity", "threat_type",
+                          "heat_score", "heat_topic", "link", "author_name", "author_handle"):
+                    if values[k] is None:
+                        values[k] = old[k]
+                merged = dict(old["data"] or {})
+                merged.update({k: v for k, v in data.items() if v not in (None, "")})
+                prev_source = (old["source_name"] or "").strip()
+                if origin == "Unknown source" and prev_source and "meltwater" not in prev_source.lower():
+                    values["source_name"] = prev_source
+                    merged["origin_source"] = prev_source
+                if old["document_id"] != doc:  # Seerist twin of a stored Meltwater post
+                    seen = [x for x in str(merged.get("also_in") or "").split("; ") if x]
+                    tag = str(data.get("export_source") or "").strip()
+                    if tag and tag not in seen:
+                        seen.append(tag)
+                    merged["also_in"] = "; ".join(seen)
+                values["data"] = merged
+                updates.append({"b_doc": old["document_id"], "last_run_id": run_id, **values})
+            if inserts:
+                conn.execute(posts.insert(), inserts)
+            if updates:
+                conn.execute(posts.update().where(posts.c.document_id == bindparam("b_doc")), updates)
         return run_id
 
-    def merge_review(self, rec: dict) -> bool:
-        """Merge review fields into an existing post. Does not insert or delete."""
-        data_in = {str(k): _jsonable(v) for k, v in rec.items()}
-        doc = _doc_id(data_in)
+    def merge_reviews(self, recs: list[dict]) -> int:
+        """Merge review fields into existing posts in bulk. Never inserts or deletes."""
+        prepared: dict[str, dict] = {}
+        for rec in recs:
+            data_in = {str(k): _jsonable(v) for k, v in rec.items()}
+            prepared.setdefault(_doc_id(data_in), {}).update(
+                {k: v for k, v in data_in.items() if v not in (None, "")})
+        if not prepared:
+            return 0
         with self.engine.begin() as conn:
-            old = conn.execute(select(posts).where(posts.c.document_id == doc)).mappings().first()
-            if not old:
-                return False
-            merged = dict(old["data"] or {})
-            merged.update({k: v for k, v in data_in.items() if v not in (None, "")})
-            values = {"data": merged, "last_run_id": old["last_run_id"]}
-            for key in ("refined_category", "severity", "threat_type", "category"):
-                if data_in.get(key) not in (None, ""):
-                    values[key] = data_in[key]
-            if _num(data_in.get("heat_score")) is not None:
-                values["heat_score"] = _num(data_in.get("heat_score"))
-            if data_in.get("heat_topic"):
-                values["heat_topic"] = data_in["heat_topic"]
-            conn.execute(posts.update().where(posts.c.document_id == doc).values(**values))
-        return True
+            existing = self._fetch(conn, posts.c.document_id, list(prepared))
+            updates = []
+            for doc, data_in in prepared.items():
+                old = existing.get(doc)
+                if not old:
+                    continue
+                merged = dict(old["data"] or {})
+                merged.update(data_in)
+                heat = _num(data_in.get("heat_score"))
+                updates.append({
+                    "b_doc": doc, "data": merged, "last_run_id": old["last_run_id"],
+                    "refined_category": data_in.get("refined_category") or old["refined_category"],
+                    "severity": data_in.get("severity") or old["severity"],
+                    "threat_type": data_in.get("threat_type") or old["threat_type"],
+                    "category": data_in.get("category") or old["category"],
+                    "heat_score": heat if heat is not None else old["heat_score"],
+                    "heat_topic": data_in.get("heat_topic") or old["heat_topic"]})
+            if updates:
+                conn.execute(posts.update().where(posts.c.document_id == bindparam("b_doc")), updates)
+        return len(updates)
 
+    def merge_review(self, rec: dict) -> bool:
+        """Merge review fields into one existing post."""
+        return self.merge_reviews([rec]) == 1
+
+    def posts_for_ids(self, ids: list[str]) -> dict[str, dict]:
+        """Stored row data for a few document ids (used to show labeled examples to Claude)."""
+        out: dict[str, dict] = {}
+        ids = [str(i) for i in ids if i]
+        if not ids:
+            return out
+        with self.engine.connect() as conn:
+            for part in self._chunks(ids):
+                for doc, data in conn.execute(
+                        select(posts.c.document_id, posts.c.data).where(posts.c.document_id.in_(part))).all():
+                    out[doc] = data if isinstance(data, dict) else {}
+        return out
+
+    def backfill_url_keys(self) -> int:
+        """Fill url_key on rows stored before the column existed, in one pass."""
+        from .alerts import normalize_url
+        with self.engine.begin() as conn:
+            rows = conn.execute(select(posts.c.document_id, posts.c.link, posts.c.data)
+                                .where(posts.c.url_key.is_(None))).all()
+            updates = []
+            for doc, link, data in rows:
+                link = link or _lc(data or {}, "url")
+                key = normalize_url(str(link)) if link else ""
+                if key:
+                    updates.append({"b_doc": doc, "url_key": key})
+            if updates:
+                conn.execute(posts.update().where(posts.c.document_id == bindparam("b_doc"))
+                             .values(url_key=bindparam("url_key")), updates)
+        return len(updates)
 
     def reuse_index(self, text_cols: list | None = None) -> "ReuseIndex":
         """Load prior classifications for skipping Claude on re-uploads and retweets."""
@@ -287,7 +395,7 @@ class Storage:
             rows = conn.execute(select(
                 posts.c.document_id, posts.c.category, posts.c.refined_category,
                 posts.c.severity, posts.c.threat_type, posts.c.heat_score, posts.c.heat_topic,
-                posts.c.link, posts.c.data)).all()
+                posts.c.link, posts.c.data).where(posts.c.is_flagged.is_(True))).all()
         for doc, cat, refined, sev, tt, heat, topic, link, data in rows:
             payload = _payload_from_stored(doc, cat, refined, sev, tt, heat, topic, data)
             blob = dict(data) if isinstance(data, dict) else {}
@@ -371,17 +479,21 @@ class Storage:
             return pd.DataFrame(conn.execute(q).all(),
                                 columns=["month", "topic", "posts", "avg_heat", "total_heat", "engagement"])
 
-    def load_posts(self, month: str | None = None, flagged_only: bool = False) -> pd.DataFrame:
-        """Stored posts; `month` filters by post month (Meltwater Date)."""
-        q = select(posts.c.data, posts.c.post_week, posts.c.post_month, posts.c.upload_week,
-                   posts.c.upload_month, posts.c.is_flagged)
+    def load_posts(self, month: str | None = None, flagged_only: bool = False,
+                   since: datetime | None = None) -> pd.DataFrame:
+        """Stored posts; `month` filters by post month (Meltwater Date), `since` by post date."""
+        q = select(posts.c.document_id, posts.c.data, posts.c.post_date, posts.c.post_week,
+                   posts.c.post_month, posts.c.upload_week, posts.c.upload_month, posts.c.is_flagged)
         if month:
             q = q.where(posts.c.post_month == month)
         if flagged_only:
             q = q.where(posts.c.is_flagged.is_(True))
+        if since is not None:
+            q = q.where(posts.c.post_date >= since.replace(tzinfo=None))
         with self.engine.connect() as conn:
             rows = conn.execute(q).all()
-        return pd.DataFrame([{**(r.data or {}), "post_week": r.post_week, "post_month": r.post_month,
+        return pd.DataFrame([{**(r.data or {}), "document_id": r.document_id, "post_date": r.post_date,
+                              "post_week": r.post_week, "post_month": r.post_month,
                               "upload_week": r.upload_week, "upload_month": r.upload_month,
                               "is_flagged": r.is_flagged} for r in rows])
 

@@ -25,16 +25,21 @@ def test_map_colors_distinct():
 
 
 def test_build_map_alert_location(monkeypatch):
+    from datetime import datetime, timezone
+    from triage import unified
     monkeypatch.setattr(geo, "persistence_enabled", lambda: False)
     alerts = pd.DataFrame([{
-        "id": 1, "source": "seerist", "url": "https://x.com/a/status/1",
+        "id": 1, "source": "seerist", "url": "https://x.com/a/status/1", "url_key": "x.com/a/status/1",
         "matched_terms": "News & Social; Location: Canberra; Sentiment: Negative",
-        "text": "rally", "posted_at": pd.Timestamp("2026-11-01", tz="UTC"),
+        "text": "Join the rally outside Parliament House Saturday 10am to stop AUKUS",
+        "posted_at": pd.Timestamp("2026-11-01", tz="UTC"),
         "received_at": pd.Timestamp("2026-11-01", tz="UTC"),
         "signal_level": "medium", "author": "x",
     }])
-    out = build_map(pd.DataFrame(), alerts, days=90)
+    raw = unified.combine(None, alerts, datetime(2026, 10, 1, tzinfo=timezone.utc))
+    out = build_map(raw, days=None)
     assert out["events"] and out["events"][0]["place"] == "Canberra"
+    assert out["events"][0]["source"] == "Seerist"
 
 
 @pytest.fixture
@@ -53,9 +58,10 @@ def test_dashboard_includes_map(client):
     assert 'id="dash-map"' in html
     assert "Natural Earth" in html and "tile.openstreetmap.org" in html
     assert "leaflet" in html.lower() and "OpenStreetMap" in html
-    assert 'data-layer="threats"' in html and 'data-layer="past"' in html
-    assert 'data-layer="planned"' in html and 'data-layer="advocacy"' in html
-    assert html.count('aria-pressed="true"') >= 4
+    assert 'data-layer="threats"' in html and 'data-layer="protests"' in html
+    assert 'data-layer="past"' not in html and 'data-layer="planned"' not in html
+    assert 'class="btn map-range"' not in html  # the map is always the last 30 days
+    assert html.count('aria-pressed="true"') >= 2
     data = client.get("/api/map?days=30").get_json()
     assert len(data["assets"]) == 16 and "threats" in data
     icons = {a["icon"] for a in data["assets"]}

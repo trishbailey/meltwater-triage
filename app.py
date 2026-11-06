@@ -26,7 +26,7 @@ from triage.pipeline import SaveFailed, process, to_workbook
 from triage import dashboard as dash
 from triage.alerts import AlertError, parse_alert
 from triage.storage import Storage, persistence_enabled
-from triage import jobs
+from triage import jobs, unified
 
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "50"))
 
@@ -189,8 +189,8 @@ def create_app() -> Flask:
             return render_template("index.html", error="Could not build the download."), 500
         return _xlsx(payload)
 
-    def _xlsx(payload: bytes):
-        name = f"flagged_posts_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.xlsx"
+    def _xlsx(payload: bytes, prefix: str = "flagged_posts"):
+        name = f"{prefix}_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.xlsx"
         return send_file(io.BytesIO(payload), as_attachment=True, download_name=name,
                          mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
@@ -229,35 +229,49 @@ def create_app() -> Flask:
         cap = os.environ.get("ANTHROPIC_MONTHLY_POST_CAP")
         return render_template("status.html", error=None, s=st.status_summary(), cap=cap)
 
+    def _labels() -> dict:
+        try:
+            from triage import feedback as fb
+            return fb.all_labels()
+        except Exception:
+            return {}
+
     @app.get("/dashboard")
     @require_password
     def dashboard():
         st = _storage()
-        if st is None:
-            ctx = dash.build(pd.DataFrame(), map_days=30)
-        else:
-            days = request.args.get("map_days", "30")
-            try:
-                map_days = None if days in ("all", "") else max(1, min(3650, int(days)))
-            except ValueError:
-                map_days = 30
-            ctx = dash.build(st.load_posts(), st.load_alerts(), st.meltwater_first_seen(),
-                             month=request.args.get("month"), map_days=map_days)
-        return render_template("dashboard.html", **ctx)
+        raw = unified.load(st) if st is not None else pd.DataFrame()
+        return render_template("dashboard.html", **dash.build(raw, _labels(), storage_ready=st is not None))
 
     @app.get("/api/map")
     @require_password
     def api_map():
-        st = _storage()
-        days = request.args.get("days", "30")
-        try:
-            map_days = None if days in ("all", "") else max(1, min(3650, int(days)))
-        except ValueError:
-            map_days = 30
         from triage.mapdata import build_map
+        st = _storage()
+        return build_map(unified.load(st) if st is not None else None, days=unified.WINDOW_DAYS)
+
+    def _category_download(kind: str):
+        st = _storage()
         if st is None:
-            return build_map(pd.DataFrame(), None, days=map_days)
-        return build_map(st.load_posts(), st.load_alerts(limit=500), days=map_days)
+            return Response("Storage is not configured.", 503)
+        try:
+            days = max(1, min(365, int(request.args.get("days", unified.WINDOW_DAYS))))
+        except ValueError:
+            days = unified.WINDOW_DAYS
+        from triage.excel_safe import write_sheets
+        from triage.export import single_sheet
+        sheets = single_sheet(unified.load(st, days=days), kind, {k: v for k, v in _labels().items()})
+        return _xlsx(write_sheets(sheets), prefix=f"{kind}_posts")
+
+    @app.get("/download/threats.xlsx")
+    @require_password
+    def download_threats():
+        return _category_download("threat")
+
+    @app.get("/download/protests.xlsx")
+    @require_password
+    def download_protests():
+        return _category_download("protest")
 
     @app.post("/alerts/<int:alert_id>/delete")
     @require_password
@@ -345,13 +359,17 @@ def create_app() -> Flask:
                 files[i] = (files[i][0], b"")
             if result.saved is False:
                 raise SaveFailed("Results were not saved to the database. Completed reviews were kept.")
-            screened = result.screened_rows or len(result.all_posts)
+            screened = result.screened_rows or len(result.flagged)
             progress("Building the Excel export", screened, screened)
             payload = to_workbook(result)
             app.logger.info("Screened %d posts in %.1fs", screened, time.monotonic() - t0)
+            cats = result.flagged["category"].fillna("") if "category" in result.flagged else []
+            threats = int(sum(1 for c in cats if c in ("threat", "both")))
+            protests = int(sum(1 for c in cats if c in ("protest", "both")))
             return {"payload": payload, "rows": screened,
                     "message": (f"File accepted: {names}. Screened {screened} posts; "
-                                f"{len(result.flagged)} flagged. The dashboard has been updated.")}
+                                f"{threats} threat and {protests} protest posts found. "
+                                "The dashboard has been updated.")}
 
         return work
 
@@ -365,6 +383,7 @@ def create_app() -> Flask:
         if st is not None:
             from triage.origin import backfill_sources
             backfill_sources(st)
+            st.backfill_url_keys()
     except Exception:
         app.logger.warning("Could not backfill post sources")
 

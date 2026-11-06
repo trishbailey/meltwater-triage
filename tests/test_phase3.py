@@ -108,41 +108,48 @@ def _posts():
     ])
 
 
-def test_alerts_layer_is_separate_and_confirmed(tmp_path):
+def test_unified_merges_alerts_and_drops_url_duplicates(tmp_path):
+    from triage import unified
     st = Storage(f"sqlite:///{tmp_path}/d.db")
-    t0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
-    st.add_alert(parse_alert(dict(ALERT, url="https://www.twitter.com/a/status/2/")), now=t0)
-    st.add_alert(parse_alert(dict(ALERT, url="https://bsky.app/x/1", source="bluesky")), now=t0)
+    now = datetime.now(timezone.utc)
+    st.add_alert(parse_alert(dict(ALERT, url="https://bsky.app/x/1", source="bluesky",
+                                  text="We will bomb the AUKUS shipyard")), now=now)
+    st.add_alert(parse_alert(dict(ALERT, url="https://x.com/a/status/99", text="nice weather")), now=now)
+    posts = pd.DataFrame([{"Document ID": "1", "Date": now.strftime("%Y-%m-%d"), "post_date": now.replace(tzinfo=None),
+                           "URL": "https://x.com/a/status/99", "link": "https://x.com/a/status/99",
+                           "category": "threat", "is_flagged": True, "Hit Sentence": "kill the AUKUS deal"}])
+    st.save_run(rows_to_store(posts, posts), ["s.xlsx"], 1)
+    df = unified.load(st)
+    assert len(df) == 2  # stored post + the bluesky alert; "nice weather" fails the pre-sort
+    assert set(df["item_type"].fillna("post")) == {"post", "alert"}
+
+
+def test_dashboard_view_has_threat_and_protest_sections():
     df = _posts()
-    st.save_run(rows_to_store(df, df), ["s.xlsx"], 4, now=t0 + timedelta(hours=5))
-    ctx = dash.build(st.load_posts(), st.load_alerts(), st.meltwater_first_seen(), month="2026-10")
-    a = ctx["alerts"]
-    assert a["total"] == 2 and a["confirmed"] == 1
-    confirmed = [i for i in a["items"] if i["confirmed"]][0]
-    assert confirmed["lead"] == "5.0 hours"
-    # Meltwater totals unaffected by alerts
-    assert ctx["headline"][0]["value"] == 2 and ctx["headline"][1]["value"] == 1
-    assert sum(v["threat"] + v["protest"] for v in ctx["volume"]) == 4
-    assert ctx["headline"][0]["delta"] == 1
-    assert ctx["posters"][0]["handle"] == "@bad" and len(ctx["posters"][0]["posts"]) == 2
-    assert ctx["targets"][0]["label"] == "Base A"
-    assert ctx["protest_locations"][0]["label"] == "Perth"
-    assert ctx["heat"][0]["label"] == "Military bases"
+    ctx = dash.build(df, {("post", "2"): "relevant"})
+    t, p = ctx["threats"], ctx["protests"]
+    assert t["count"] == 3 and p["count"] == 1
+    assert t["authors"][0]["label"] == "@bad" and len(t["authors"][0]["posts"]) == 3
+    assert t["targets"][0]["label"] == "Base A"
+    assert {x["label"].lower() for x in t["topics"]} == {"violence", "doxxing"}
+    assert p["topics"][0]["label"] == "submarines"
+    assert t["download"] == "/download/threats.xlsx" and p["download"] == "/download/protests.xlsx"
+    assert {c["handle"] for c in t["posts"]} == {"@bad"} and t["posts"][0]["platform"]
 
 
 def test_dashboard_renders_with_data(client):
+    from triage import unified
     st = Storage()
-    df = _posts()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    df = _posts().assign(post_date=now, Date=now.strftime("%Y-%m-%d"))
     st.save_run(rows_to_store(df, df), ["s.xlsx"], 4)
-    client.post("/api/alerts", json=ALERT, headers=bearer())
     login(client)
-    html = client.get("/dashboard?month=2026-10", headers=auth()).get_data(as_text=True)
-    for s in ("Recurring threat posters", "Early warning", "Threat ranking", "Monthly trend",
-              "Upcoming protests", "post-row", "not added to the threat, protest, or monthly totals"):
+    html = client.get("/dashboard", headers=auth()).get_data(as_text=True)
+    for s in ("Threats", "Protests", "targets", "authors", "Flagged posts", "post-row",
+              "/download/threats.xlsx", "/download/protests.xlsx"):
         assert s in html
-    assert "Trish" not in html and "google-analytics" not in html
-    status = client.get("/status", headers=auth()).get_data(as_text=True)
-    assert "2026-10" in status
+    for gone in ("Early warning", "Monthly trend", "Upcoming protests", "Trish", "google-analytics"):
+        assert gone not in html
 
 
 def test_palette_distinct():

@@ -47,9 +47,7 @@ def test_second_upload_skips_claude_for_same_document_ids(tmp_path, monkeypatch)
     res1 = process([("1.xlsx", data)], refine_fn=_fake(calls), heat_fn=_fake(calls), storage=st)
     assert any(k == "refine" for k, *_ in calls)
     refine_n = sum(n for k, n, *_ in calls if k == "refine")
-    heat_n = sum(n for k, n, *_ in calls if k == "heat")
-    assert refine_n == 2  # A1 A2 flagged
-    assert heat_n == 3
+    assert refine_n == 2  # A1 A2 flagged; the unflagged post never reaches Claude
     assert res1.run_id is not None
     calls.clear()
     res2 = process([("2.xlsx", data)], refine_fn=_fake(calls), heat_fn=_fake(calls), storage=st)
@@ -83,11 +81,10 @@ def test_same_text_retweet_reuses_classification_in_one_file(tmp_path, monkeypat
     assert len(res.flagged) >= 2
 
 
-def test_heat_collapses_same_file_url_and_text(tmp_path, monkeypatch):
+def test_same_file_url_and_text_duplicates_collapse(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("ANTHROPIC_MONTHLY_POST_CAP", raising=False)
-    monkeypatch.setenv("HEAT_MAX_POSTS", "50")
     st = Storage(f"sqlite:///{tmp_path/'h.db'}")
     text = "We will kill the AUKUS deal and bomb the base on Saturday at the harbour"
     data = _book([
@@ -97,12 +94,8 @@ def test_heat_collapses_same_file_url_and_text(tmp_path, monkeypatch):
         {"Document ID": "H3", "URL": "https://x.com/b/9", "Engagement": 3, "Hit Sentence": text},
     ])
     calls = []
-    res = process([("h.xlsx", data)], refine_fn=_fake(calls), heat_fn=_fake(calls), storage=st)
-    heat_n = sum(n for k, n, *_ in calls if k == "heat")
-    assert heat_n == 1, calls
-    assert len(res.all_posts) == 3
-    heated = res.all_posts["heat_sampled"].fillna(False).astype(bool)
-    assert heated.sum() == 3
+    process([("h.xlsx", data)], refine_fn=_fake(calls), storage=st)
+    assert sum(n for _, n, *_ in calls) == 1, calls  # one Claude slot for the three copies
 
 
 def test_fingerprint_helper_ignores_urls_and_case():
