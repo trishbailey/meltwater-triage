@@ -37,7 +37,8 @@ reasons = Table(
 # One click after a mark tells Claude why. Codes are stored; labels are shown.
 NOT_RELEVANT_REASONS = {
     "advocacy": "Advocacy or petition",
-    "commentary": "Commentary or news",
+    "commentary": "Opinion and commentary",
+    "news": "News",
     "past_event": "Past event",
     "off_topic": "Not about AUKUS",
     "joke": "Joke, hyperbole, or irony",
