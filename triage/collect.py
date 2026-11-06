@@ -210,3 +210,33 @@ def start_scheduler(storage, logger=log, env=None, sleep=None):
     t = threading.Thread(target=loop, name="collector", daemon=True)
     t.start()
     return t
+
+
+def start_review_loop(storage, logger=log, env=None, sleep=None):
+    """Keep Claude's filter running: every REVIEW_INTERVAL_MINUTES (default 10), judge new candidates,
+    analyze approved posts, and alert the analyst. Needs ANTHROPIC_API_KEY."""
+    import threading
+    import time
+    env = os.environ if env is None else env
+    if env.get("REVIEW_LOOP", "1") == "0" or not env.get("ANTHROPIC_API_KEY"):
+        return None
+    try:
+        minutes = max(1, int(env.get("REVIEW_INTERVAL_MINUTES", "10")))
+    except ValueError:
+        minutes = 10
+    pause = sleep or time.sleep
+
+    def loop():
+        pause(90)  # let the deploy settle
+        while True:
+            try:
+                result = review_backlog(storage)
+                if any(v for v in result.values()):
+                    logger.info("review loop: %s", result)
+            except Exception:  # noqa: BLE001
+                logger.exception("review loop failed")
+            pause(minutes * 60)
+
+    t = threading.Thread(target=loop, name="review-loop", daemon=True)
+    t.start()
+    return t

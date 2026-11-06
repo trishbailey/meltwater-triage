@@ -91,6 +91,13 @@ alert_reviews = Table(
     Column("data", JSON, nullable=False),  # review fields: is_genuine, refined_category, analysis
 )
 
+notified_items = Table(
+    "notified_items", metadata,
+    Column("item_type", String(16), primary_key=True),
+    Column("item_id", String(255), primary_key=True),
+    Column("notified_at", DateTime(timezone=True), nullable=False),
+)
+
 _NUMERIC_ID = re.compile(r"-?\d+\.0+")
 
 
@@ -563,6 +570,24 @@ class Storage:
                     conn.execute(alert_reviews.insert().values(alert_id=aid, data=new))
                 n += 1
         return n
+
+    def notified_keys(self) -> set[tuple[str, str]]:
+        with self.engine.connect() as conn:
+            return {(r[0], r[1]) for r in conn.execute(
+                select(notified_items.c.item_type, notified_items.c.item_id)).all()}
+
+    def mark_notified(self, keys, now: datetime | None = None) -> int:
+        keys = list(keys)
+        if not keys:
+            return 0
+        when = _utc(now)
+        with self.engine.begin() as conn:
+            have = {(r[0], r[1]) for r in conn.execute(
+                select(notified_items.c.item_type, notified_items.c.item_id)).all()}
+            fresh = [{"item_type": t, "item_id": i, "notified_at": when} for t, i in keys if (t, i) not in have]
+            if fresh:
+                conn.execute(notified_items.insert(), fresh)
+        return len(fresh)
 
     def meltwater_first_seen(self) -> dict:
         """Normalized post URL -> when the post first arrived via a Meltwater upload."""

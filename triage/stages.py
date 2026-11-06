@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 import pandas as pd
 
@@ -84,9 +85,21 @@ def analyze_relevant(storage, complete=None) -> int:
     return n + (storage.merge_alert_reviews(alert_recs) if alert_recs else 0)
 
 
-def run_all(storage, complete=None) -> dict:
-    """Filter backlog, then analyze approved posts. Each step is independent."""
+_RUN_LOCK = threading.Lock()
+
+
+def run_all(storage, complete=None, notify: bool = True) -> dict:
+    """Filter new candidates, analyze approved posts, then alert the analyst. One run at a time."""
     from .pipeline import backfill_flagged
+    if not _RUN_LOCK.acquire(blocking=False):
+        return {"skipped": "another run is in progress"}
+    try:
+        return _run_all(storage, complete, notify, backfill_flagged)
+    finally:
+        _RUN_LOCK.release()
+
+
+def _run_all(storage, complete, notify, backfill_flagged) -> dict:
     out = {}
     for name, fn in (("filtered_posts", lambda: backfill_flagged(storage, complete=complete)),
                      ("filtered_alerts", lambda: review_alerts(storage, complete=complete)),
@@ -96,4 +109,11 @@ def run_all(storage, complete=None) -> dict:
         except Exception as exc:  # noqa: BLE001
             log.warning("%s failed: %s", name, type(exc).__name__)
             out[name] = f"failed: {type(exc).__name__}"
+    if notify:
+        try:
+            from .notify import announce
+            out["alert"] = announce(storage)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("alert step failed: %s", type(exc).__name__)
+            out["alert"] = f"failed: {type(exc).__name__}"
     return out

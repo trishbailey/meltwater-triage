@@ -149,3 +149,7 @@ Posts are stored as alerts, pre-sorted like uploads, and de-duplicated by URL. X
 4. The dashboard lists the survivors in clusters of similar posts (`triage/grouping.py`). One mark on a cluster labels every post in it, and new posts that match a judged cluster inherit its label (`triage/propagate.py`).
 5. Claude receives the analyst's judgments as examples (one per pattern) in every filter prompt.
 6. Topic and target analysis (Claude, analyze mode), the map, and both Excel downloads use only posts marked Relevant. Analysis runs in the background after posts are marked Relevant.
+
+## Continuous filtering and alerts
+
+With `ANTHROPIC_API_KEY` set, a background loop (`REVIEW_INTERVAL_MINUTES`, default 10; `REVIEW_LOOP=0` disables) runs Claude's filter on new candidates, analyzes approved posts, and then sends an alert. The dashboard lists only posts Claude passed. Alerts go to `ALERT_WEBHOOK_URL` (Slack, Teams, or Discord `/slack` webhook) and/or email (`ALERT_EMAIL_TO` with `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`). The first run records the posts already on the dashboard and sends nothing.

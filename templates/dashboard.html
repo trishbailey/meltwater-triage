@@ -1,14 +1,4 @@
 {% extends "_base.html" %}{% block title %}Threat and Protest Monitor{% endblock %}{% block body %}
-{% macro reason_row(cur, note) %}
-<div class="reason-row nr" role="group" aria-label="Why not relevant">
-<span class="note">Why? (optional)</span>
-{% for code, name in not_relevant_reasons.items() %}<button type="button" class="chip" data-reason="{{ code }}" aria-pressed="{{ 'true' if cur==code else 'false' }}">{{ name }}</button>{% endfor %}
-<span class="other-note"{% if cur != 'other' %} hidden{% endif %}><input type="text" class="reason-note" maxlength="300" placeholder="Short note" value="{{ note }}"> <button type="button" class="btn save-note">Save note</button></span>
-</div>
-<div class="reason-row rl" role="group" aria-label="Relevance detail">
-{% for code, name in relevant_reasons.items() %}<button type="button" class="chip" data-reason="{{ code }}" aria-pressed="{{ 'true' if cur==code else 'false' }}">{{ name }}</button>{% endfor %}
-</div>
-{% endmacro %}
 {% macro post_row(post) %}
 {% set plabel = post.label %}
 <div class="post post-row {% if plabel=='not_relevant' %}item-hidden{% endif %}" data-item-type="{{ post.item_type }}" data-item-id="{{ post.item_id }}" data-source="{{ post.platform }}" data-label="{{ plabel }}" data-topic="{{ post.topic }}" data-targets="{{ post.target_list|join('|') }}" {% if plabel=='not_relevant' %}hidden{% endif %}>
@@ -23,7 +13,7 @@
 <div class="rel-btns" role="group" aria-label="Relevance">
 <button type="button" class="btn" data-label="relevant" aria-pressed="{{ 'true' if plabel=='relevant' else 'false' }}">Relevant</button>
 <button type="button" class="btn" data-label="not_relevant" aria-pressed="{{ 'true' if plabel=='not_relevant' else 'false' }}">Not relevant</button>
-</div>{{ reason_row(post.reason, post.note) }}</div>
+</div></div>
 {% endmacro %}
 {% macro group_card(g) %}
 {% if g.n == 1 %}{{ post_row(g.rep) }}{% else %}
@@ -40,7 +30,6 @@
 <button type="button" class="btn" data-group-label="relevant">All {{ g.n }} relevant</button>
 <button type="button" class="btn" data-group-label="not_relevant">All {{ g.n }} not relevant</button>
 </div></div>
-{{ reason_row(g.reason, "") }}
 <details class="group-members"><summary>Show the {{ g.n }} posts</summary>
 {% for post in g.members %}{{ post_row(post) }}{% endfor %}</details>
 </div>{% endif %}
@@ -55,15 +44,16 @@
 {% endmacro %}
 {% macro section(s, title, anchor, noun) %}
 <section class="panel" id="{{ anchor }}">
-<div class="sec-head"><h2>{{ title }} <span class="note">{{ s.count }} post{{ "s" if s.count != 1 }}</span></h2>
+<div class="sec-head">{% set shown = s.reviewed if review_on else s.count %}<h2>{{ title }} <span class="note">{{ shown }} post{{ "s" if shown != 1 }}</span></h2>
 <a class="btn dl-btn" href="{{ s.download }}" download data-noun="{{ noun }}"{% if not s.relevant %} aria-disabled="true"{% endif %}><span class="dl-label">Download <span class="dl-n">{{ s.relevant }}</span> relevant {{ noun }} post<span class="dl-s">{{ "s" if s.relevant != 1 }}</span> (Excel)</span></a></div>
 {% if s.count %}
-<p class="note">{{ s.reviewed }} reviewed by AI{% if s.pending %}, {{ s.pending }} pre-sorted and waiting for review{% endif %}. Similar posts are grouped: mark a group once to label every post in it, or open it to mark posts one by one. The download contains only the posts marked Relevant, with the raw data and the AI analysis.</p>
+<p class="note">{{ s.reviewed }} passed the AI filter and are ready for your review. Similar posts are grouped: mark a group once to label every post in it, or open it to mark posts one by one. The download contains only the posts marked Relevant, with the raw data and the AI analysis.</p>
 <details class="flagged" open><summary><strong>AI-reviewed posts</strong> ({{ s.reviewed }} post{{ "s" if s.reviewed != 1 }} in {{ s.groups_total }} group{{ "s" if s.groups_total != 1 }})</summary>
 <div class="body">{% for g in s.groups %}{{ group_card(g) }}{% endfor %}
 {% if not s.groups %}<p class="note">No AI-reviewed posts yet.</p>{% endif %}</div></details>
-{% if s.pending %}<details class="flagged"><summary><strong>Waiting for AI review</strong> ({{ s.pending }} post{{ "s" if s.pending != 1 }} in {{ s.pending_groups_total }} group{{ "s" if s.pending_groups_total != 1 }})</summary>
-<div class="body">{% for g in s.pending_groups %}{{ group_card(g) }}{% endfor %}</div></details>{% endif %}
+{% if s.pending %}{% if review_on %}<p class="note">{{ s.pending }} more post{{ "s" if s.pending != 1 }} waiting for the AI filter. They appear here once it passes them.</p>
+{% else %}<details class="flagged"><summary><strong>Pre-sorted, AI filter is off</strong> ({{ s.pending }} post{{ "s" if s.pending != 1 }} in {{ s.pending_groups_total }} group{{ "s" if s.pending_groups_total != 1 }})</summary>
+<div class="body">{% for g in s.pending_groups %}{{ group_card(g) }}{% endfor %}</div></details>{% endif %}{% endif %}
 {% if s.more %}<p class="note">Showing the newest groups. {{ s.more }} more posts are not listed.</p>{% endif %}
 <div class="analysis" data-color="{{ s.color }}">
 <p class="note an-empty"{% if s.relevant %} hidden{% endif %}>Topic and target analysis appears once you mark posts Relevant. It counts only those posts.</p>
@@ -80,6 +70,14 @@
 {% if not storage_ready %}<p class="err">Storage is not configured (DATABASE_URL is not set), so there is nothing to show.</p>{% endif %}
 <p class="note"><label><input type="checkbox" id="show-hidden"> Show items marked not relevant</label></p>
 
+<div id="reason-pop" hidden role="dialog" aria-modal="true" aria-labelledby="rp-title">
+<div class="rp-card">
+<h3 id="rp-title">Why not relevant? <span class="note">(optional)</span></h3>
+<p class="note rp-preview"></p>
+<div class="rp-chips">{% for code, name in not_relevant_reasons.items() %}<button type="button" class="chip" data-reason="{{ code }}">{{ name }}</button>{% endfor %}</div>
+<div class="rp-other" hidden><input type="text" class="reason-note" maxlength="300" placeholder="Short note"> <button type="button" class="btn rp-save">Save note</button></div>
+<p><button type="button" class="btn rp-skip">Skip</button></p>
+</div></div>
 {{ section(threats, "Threats", "threats", "threat") }}
 {{ section(protests, "Protests", "protests", "protest") }}
 
