@@ -340,6 +340,45 @@ def create_app() -> Flask:
         alert_id, created = st.add_alert(alert)
         return {"id": alert_id, "duplicate": not created}, 201 if created else 200
 
+    @app.post("/api/collect")
+    def collect_now():
+        """Start the daily Facebook, Instagram and Bluesky pull (called by the Render cron job)."""
+        expected = os.environ.get("ALERT_INGEST_TOKEN")
+        if not expected:
+            return {"error": "alert ingest is not configured"}, 503
+        auth = request.headers.get("Authorization", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        if not token or not hmac.compare_digest(token.encode("utf-8", "ignore"), expected.encode("utf-8")):
+            return {"error": "unauthorized"}, 401
+        st = _storage()
+        if st is None:
+            return {"error": "storage is not configured"}, 503
+        state = app.extensions.setdefault("collect", {"running": False, "last": None})
+        if state["running"]:
+            return {"status": "already running"}, 202
+
+        def work():
+            from triage.collect import collect
+            try:
+                state["last"] = {"at": datetime.now(timezone.utc).isoformat(), "result": collect(st)}
+            except Exception as exc:  # noqa: BLE001
+                state["last"] = {"at": datetime.now(timezone.utc).isoformat(), "error": str(exc)[:300]}
+            finally:
+                state["running"] = False
+
+        state["running"] = True
+        threading.Thread(target=work, daemon=True).start()
+        return {"status": "started"}, 202
+
+    @app.get("/api/collect")
+    def collect_status():
+        expected = os.environ.get("ALERT_INGEST_TOKEN")
+        auth = request.headers.get("Authorization", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        if not expected or not token or not hmac.compare_digest(token.encode("utf-8", "ignore"), expected.encode("utf-8")):
+            return {"error": "unauthorized"}, 401
+        return app.extensions.get("collect", {"running": False, "last": None})
+
     def _screen_work(files):
         names = ", ".join(n for n, _ in files)[:300]
 
